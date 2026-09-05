@@ -1,0 +1,70 @@
+-- Ganti fungsi safeTeleportTo dengan versi ini (menerapkan advance ~3 stud untuk Batang)
+
+local function safeTeleportTo(part)
+    if not part or not part:IsA("BasePart") then return false, "Invalid target" end
+    local char = player and player.Character
+    if not char then return false, "Character not found" end
+    local hrp = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
+    if not hrp then return false, "Humanoid root not found" end
+
+    -- parameters
+    local sizeX, sizeZ = part.Size.X, part.Size.Z
+    local horizHalf = math.max(sizeX, sizeZ) / 2
+    local sideExtra = 3        -- jarak ekstra default dari sisi part
+    local extraForward = 0     -- jarak yang dikurangi (membuat lebih dekat)
+    if part.Name == "Batang" then
+        extraForward = 3      -- maju ~3 stud untuk Batang (sesuaikan jika mau lebih/kurang)
+    end
+
+    -- pastikan jarak tidak negatif
+    local function computeDist()
+        return math.max(1, horizHalf + sideExtra - extraForward)
+    end
+
+    local tryHeightAbove = 50
+    local raycastDown = -Vector3.new(0, 200, 0)
+
+    local directions = {
+        part.CFrame.RightVector,
+        -part.CFrame.RightVector,
+        part.CFrame.LookVector,
+        -part.CFrame.LookVector,
+    }
+
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+    rayParams.FilterDescendantsInstances = { char, part }
+
+    for _, dir in ipairs(directions) do
+        local dist = computeDist()
+        local candidateXZ = part.Position + dir * dist
+        local origin = candidateXZ + Vector3.new(0, tryHeightAbove, 0)
+        local result = workspace:Raycast(origin, raycastDown, rayParams)
+        if result and result.Position then
+            local groundY = result.Position.Y
+            local targetPos = Vector3.new(candidateXZ.X, groundY + 2.2, candidateXZ.Z)
+            local lookAt = Vector3.new(part.Position.X, targetPos.Y, part.Position.Z)
+            local targetCFrame = CFrame.new(targetPos, lookAt)
+            local ok, err = pcall(function() hrp.CFrame = targetCFrame end)
+            if ok then
+                return true, "Teleported beside part (raycast)"
+            end
+        end
+    end
+
+    -- fallback: posisi samping relatif ke RightVector tanpa raycast
+    do
+        local dist = computeDist()
+        local dir = part.CFrame.RightVector
+        local candidatePos = part.Position + dir * dist
+        candidatePos = Vector3.new(candidatePos.X, part.Position.Y + 2.5, candidatePos.Z)
+        local lookAt = Vector3.new(part.Position.X, candidatePos.Y, part.Position.Z)
+        local targetCFrame = CFrame.new(candidatePos, lookAt)
+        local ok, err = pcall(function() hrp.CFrame = targetCFrame end)
+        if ok then
+            return true, "Teleported beside part (fallback)"
+        else
+            return false, tostring(err)
+        end
+    end
+end
