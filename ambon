@@ -1,0 +1,566 @@
+-- ============================================
+-- AUTO TELEPORT + AUTO SWING SCRIPT v2
+-- Devil's Market Roblox - Mobile Compatible
+-- ============================================
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local Player = Players.LocalPlayer
+local Character = Player.Character or Player.CharacterAdded:Wait()
+local PlayerGui = Player:WaitForChild("PlayerGui")
+local Humanoid = Character:WaitForChild("Humanoid")
+local RootPart = Character:WaitForChild("HumanoidRootPart")
+
+print("=== AUTO TELEPORT & SWING SCRIPT v2 ===")
+print("Player:", Player.Name)
+print("Character:", Character.Name)
+print("RootPart:", RootPart.Name)
+
+-- ============================================
+-- VARIABLES
+-- ============================================
+
+local Config = {
+    -- Teleport Settings
+    TeleportEnabled = false,
+    TeleportDelay = 2,
+    TeleportSpeed = 50,
+    SelectedLocations = {
+        BatuBesar = false,
+        PohonBesar = false,
+    },
+    
+    -- Proximity/Auto Swing Settings
+    SwingEnabled = false,
+    ProximityDistance = {
+        PohonBesar = 9,
+        BatuBesar = 13,
+    },
+    HoldDuration = 0.3,
+}
+
+local TeleportLoopActive = false
+local SwingLoopActive = false
+
+-- ============================================
+-- DEBUG: Find resources
+-- ============================================
+
+local function DebugFindResources()
+    print("\n[DEBUG] Searching for resources...")
+    local bahanCraft = Workspace:FindFirstChild("BahanCraft")
+    
+    if bahanCraft then
+        print("[DEBUG] ✓ BahanCraft found")
+        for _, child in ipairs(bahanCraft:GetChildren()) do
+            print("[DEBUG]   - Found:", child.Name, "| Type:", child.ClassName)
+            if child:FindFirstChild("HumanoidRootPart") then
+                local pos = child.HumanoidRootPart.Position
+                print("[DEBUG]     Position:", pos.X, pos.Y, pos.Z)
+            end
+        end
+    else
+        print("[DEBUG] ✗ BahanCraft NOT found")
+    end
+end
+
+DebugFindResources()
+
+-- ============================================
+-- FUNCTIONS: TELEPORT
+-- ============================================
+
+local function GetAllResources()
+    local bahanCraft = Workspace:FindFirstChild("BahanCraft")
+    local resources = {}
+    
+    if not bahanCraft then
+        print("[TELEPORT] BahanCraft not found!")
+        return resources
+    end
+    
+    for _, child in ipairs(bahanCraft:GetChildren()) do
+        if child:IsA("Model") then
+            local hrp = child:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                resources[child.Name] = {
+                    model = child,
+                    position = hrp.Position,
+                    hrp = hrp
+                }
+                print("[TELEPORT] Found resource:", child.Name, "at", hrp.Position)
+            end
+        end
+    end
+    
+    return resources
+end
+
+local function TeleportToResource(resourceData)
+    if not Character or not Character:FindFirstChild("HumanoidRootPart") then
+        print("[TELEPORT] Character not found!")
+        return false
+    end
+    
+    if not resourceData or not resourceData.hrp then
+        print("[TELEPORT] Resource invalid!")
+        return false
+    end
+    
+    -- Teleport dengan offset random
+    local offsetX = math.random(-10, 10)
+    local offsetZ = math.random(-10, 10)
+    local targetPos = resourceData.hrp.Position + Vector3.new(offsetX, 3, offsetZ)
+    
+    print("[TELEPORT] Teleporting to:", resourceData.model.Name, "at", targetPos)
+    
+    Character:MoveTo(targetPos)
+    return true
+end
+
+local function AutoTeleport()
+    if TeleportLoopActive then
+        print("[TELEPORT] Loop already active!")
+        return
+    end
+    
+    TeleportLoopActive = true
+    print("[TELEPORT] Starting teleport loop...")
+    
+    while Config.TeleportEnabled and TeleportLoopActive do
+        local resources = GetAllResources()
+        
+        -- Teleport ke Batu Besar jika dipilih
+        if Config.SelectedLocations.BatuBesar and resources.BatuBesar then
+            print("[TELEPORT] >> Going to BatuBesar")
+            TeleportToResource(resources.BatuBesar)
+            task.wait(Config.TeleportDelay)
+        end
+        
+        -- Teleport ke Pohon Besar jika dipilih
+        if Config.SelectedLocations.PohonBesar and resources.PohonBesar then
+            print("[TELEPORT] >> Going to PohonBesar")
+            TeleportToResource(resources.PohonBesar)
+            task.wait(Config.TeleportDelay)
+        end
+        
+        task.wait(0.5)
+    end
+    
+    TeleportLoopActive = false
+    print("[TELEPORT] Loop stopped")
+end
+
+-- ============================================
+-- FUNCTIONS: AUTO SWING
+-- ============================================
+
+local function GetNearbyResources()
+    local resources = GetAllResources()
+    local nearbyResources = {}
+    
+    if not Character or not Character:FindFirstChild("HumanoidRootPart") then
+        return nearbyResources
+    end
+    
+    local playerPos = Character.HumanoidRootPart.Position
+    
+    for resourceName, resourceData in pairs(resources) do
+        local distance = (playerPos - resourceData.position).Magnitude
+        
+        if resourceName == "PohonBesar" and distance <= Config.ProximityDistance.PohonBesar then
+            table.insert(nearbyResources, {
+                name = "PohonBesar",
+                distance = distance,
+                data = resourceData
+            })
+            print("[PROXIMITY] Pohon detected at distance:", distance)
+        elseif resourceName == "BatuBesar" and distance <= Config.ProximityDistance.BatuBesar then
+            table.insert(nearbyResources, {
+                name = "BatuBesar",
+                distance = distance,
+                data = resourceData
+            })
+            print("[PROXIMITY] Batu detected at distance:", distance)
+        end
+    end
+    
+    return nearbyResources
+end
+
+local function GetEquippedTool()
+    if not Character then return nil end
+    
+    for _, item in ipairs(Character:GetChildren()) do
+        if item:IsA("Tool") then
+            print("[TOOL] Found tool:", item.Name)
+            return item
+        end
+    end
+    
+    return nil
+end
+
+local function ActivateToolSwing(tool)
+    if not tool then
+        print("[SWING] No tool equipped!")
+        return false
+    end
+    
+    -- Method 1: Activate signal
+    if tool:FindFirstChild("Handle") then
+        print("[SWING] Swinging tool:", tool.Name)
+        
+        -- Try firing Activated signal
+        if tool:IsA("Tool") then
+            tool:Activate()
+            return true
+        end
+    end
+    
+    return false
+end
+
+local function AutoSwing()
+    if SwingLoopActive then
+        print("[SWING] Loop already active!")
+        return
+    end
+    
+    SwingLoopActive = true
+    print("[SWING] Starting swing loop...")
+    
+    while Config.SwingEnabled and SwingLoopActive do
+        local nearbyResources = GetNearbyResources()
+        
+        if #nearbyResources > 0 then
+            local tool = GetEquippedTool()
+            
+            if tool then
+                print("[SWING] Swinging at", #nearbyResources, "resources")
+                ActivateToolSwing(tool)
+                task.wait(Config.HoldDuration)
+            else
+                print("[SWING] No tool equipped, waiting...")
+                task.wait(1)
+            end
+        else
+            task.wait(0.5)
+        end
+    end
+    
+    SwingLoopActive = false
+    print("[SWING] Loop stopped")
+end
+
+-- ============================================
+-- GUI
+-- ============================================
+
+local function CreateGui()
+    print("[GUI] Creating GUI...")
+    
+    -- Cek apakah GUI sudah ada
+    local existingGui = PlayerGui:FindFirstChild("AutoTeleportSwingGUI")
+    if existingGui then
+        print("[GUI] Removing existing GUI...")
+        existingGui:Destroy()
+    end
+    
+    -- Create ScreenGui
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "AutoTeleportSwingGUI"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = PlayerGui
+    
+    -- Create Main Frame
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Name = "MainFrame"
+    mainFrame.Size = UDim2.new(0, 360, 0, 700)
+    mainFrame.Position = UDim2.new(0, 10, 0, 50)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    mainFrame.BorderSizePixel = 2
+    mainFrame.BorderColor3 = Color3.fromRGB(0, 255, 150)
+    mainFrame.Parent = screenGui
+    
+    -- Title
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Name = "Title"
+    titleLabel.Size = UDim2.new(1, 0, 0, 50)
+    titleLabel.BackgroundColor3 = Color3.fromRGB(0, 200, 150)
+    titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    titleLabel.TextSize = 16
+    titleLabel.Font = Enum.Font.GothamBold
+    titleLabel.Text = "AUTO TELEPORT & SWING v2"
+    titleLabel.Parent = mainFrame
+    
+    -- ============================================
+    -- TELEPORT SECTION
+    -- ============================================
+    
+    local teleportLabel = Instance.new("TextLabel")
+    teleportLabel.Name = "TeleportLabel"
+    teleportLabel.Size = UDim2.new(1, 0, 0, 30)
+    teleportLabel.Position = UDim2.new(0, 0, 0, 50)
+    teleportLabel.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+    teleportLabel.TextColor3 = Color3.fromRGB(255, 200, 87)
+    teleportLabel.TextSize = 14
+    teleportLabel.Font = Enum.Font.GothamBold
+    teleportLabel.Text = "TELEPORT MODE"
+    teleportLabel.Parent = mainFrame
+    
+    -- Teleport Toggle Button
+    local teleportToggleBtn = Instance.new("TextButton")
+    teleportToggleBtn.Name = "TeleportToggle"
+    teleportToggleBtn.Size = UDim2.new(0.9, 0, 0, 40)
+    teleportToggleBtn.Position = UDim2.new(0.05, 0, 0, 85)
+    teleportToggleBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+    teleportToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    teleportToggleBtn.TextSize = 14
+    teleportToggleBtn.Font = Enum.Font.Gotham
+    teleportToggleBtn.Text = "[OFF] TELEPORT"
+    teleportToggleBtn.Parent = mainFrame
+    
+    local function UpdateTeleportButtonUI()
+        if Config.TeleportEnabled then
+            teleportToggleBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+            teleportToggleBtn.Text = "[ON] TELEPORT"
+        else
+            teleportToggleBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+            teleportToggleBtn.Text = "[OFF] TELEPORT"
+        end
+    end
+    
+    teleportToggleBtn.MouseButton1Click:Connect(function()
+        Config.TeleportEnabled = not Config.TeleportEnabled
+        UpdateTeleportButtonUI()
+        print("[TELEPORT] Toggled:", Config.TeleportEnabled)
+        
+        if Config.TeleportEnabled then
+            task.spawn(AutoTeleport)
+        else
+            TeleportLoopActive = false
+        end
+    end)
+    
+    -- Batu Besar Checkbox
+    local batuCheckBtn = Instance.new("TextButton")
+    batuCheckBtn.Name = "BatuCheck"
+    batuCheckBtn.Size = UDim2.new(0.4, 0, 0, 35)
+    batuCheckBtn.Position = UDim2.new(0.05, 0, 0, 130)
+    batuCheckBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+    batuCheckBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    batuCheckBtn.TextSize = 12
+    batuCheckBtn.Font = Enum.Font.Gotham
+    batuCheckBtn.Text = "☐ Batu Besar"
+    batuCheckBtn.Parent = mainFrame
+    
+    local function UpdateBatuCheck()
+        if Config.SelectedLocations.BatuBesar then
+            batuCheckBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+            batuCheckBtn.Text = "☑ Batu Besar"
+        else
+            batuCheckBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+            batuCheckBtn.Text = "☐ Batu Besar"
+        end
+    end
+    
+    batuCheckBtn.MouseButton1Click:Connect(function()
+        Config.SelectedLocations.BatuBesar = not Config.SelectedLocations.BatuBesar
+        UpdateBatuCheck()
+        print("[TELEPORT] Batu Besar:", Config.SelectedLocations.BatuBesar)
+    end)
+    
+    -- Pohon Besar Checkbox
+    local pohonCheckBtn = Instance.new("TextButton")
+    pohonCheckBtn.Name = "PohonCheck"
+    pohonCheckBtn.Size = UDim2.new(0.4, 0, 0, 35)
+    pohonCheckBtn.Position = UDim2.new(0.55, 0, 0, 130)
+    pohonCheckBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+    pohonCheckBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    pohonCheckBtn.TextSize = 12
+    pohonCheckBtn.Font = Enum.Font.Gotham
+    pohonCheckBtn.Text = "☐ Pohon Besar"
+    pohonCheckBtn.Parent = mainFrame
+    
+    local function UpdatePohonCheck()
+        if Config.SelectedLocations.PohonBesar then
+            pohonCheckBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+            pohonCheckBtn.Text = "☑ Pohon Besar"
+        else
+            pohonCheckBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+            pohonCheckBtn.Text = "☐ Pohon Besar"
+        end
+    end
+    
+    pohonCheckBtn.MouseButton1Click:Connect(function()
+        Config.SelectedLocations.PohonBesar = not Config.SelectedLocations.PohonBesar
+        UpdatePohonCheck()
+        print("[TELEPORT] Pohon Besar:", Config.SelectedLocations.PohonBesar)
+    end)
+    
+    -- Delay Slider
+    local delayLabelText = Instance.new("TextLabel")
+    delayLabelText.Size = UDim2.new(0.9, 0, 0, 20)
+    delayLabelText.Position = UDim2.new(0.05, 0, 0, 170)
+    delayLabelText.BackgroundTransparency = 1
+    delayLabelText.TextColor3 = Color3.fromRGB(200, 200, 200)
+    delayLabelText.TextSize = 12
+    delayLabelText.Font = Enum.Font.Gotham
+    delayLabelText.Text = "Delay: " .. Config.TeleportDelay .. "s"
+    delayLabelText.TextXAlignment = Enum.TextXAlignment.Left
+    delayLabelText.Parent = mainFrame
+    
+    local delaySlider = Instance.new("Frame")
+    delaySlider.Size = UDim2.new(0.9, 0, 0, 6)
+    delaySlider.Position = UDim2.new(0.05, 0, 0, 195)
+    delaySlider.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+    delaySlider.Parent = mainFrame
+    
+    local sliderFill = Instance.new("Frame")
+    sliderFill.Size = UDim2.new((Config.TeleportDelay - 1) / 19, 0, 1, 0)
+    sliderFill.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+    sliderFill.Parent = delaySlider
+    
+    -- ============================================
+    -- SWING SECTION
+    -- ============================================
+    
+    local swingLabel = Instance.new("TextLabel")
+    swingLabel.Name = "SwingLabel"
+    swingLabel.Size = UDim2.new(1, 0, 0, 30)
+    swingLabel.Position = UDim2.new(0, 0, 0, 220)
+    swingLabel.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+    swingLabel.TextColor3 = Color3.fromRGB(255, 152, 0)
+    swingLabel.TextSize = 14
+    swingLabel.Font = Enum.Font.GothamBold
+    swingLabel.Text = "PROXIMITY SWING"
+    swingLabel.Parent = mainFrame
+    
+    -- Swing Toggle Button
+    local swingToggleBtn = Instance.new("TextButton")
+    swingToggleBtn.Name = "SwingToggle"
+    swingToggleBtn.Size = UDim2.new(0.9, 0, 0, 40)
+    swingToggleBtn.Position = UDim2.new(0.05, 0, 0, 255)
+    swingToggleBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+    swingToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    swingToggleBtn.TextSize = 14
+    swingToggleBtn.Font = Enum.Font.Gotham
+    swingToggleBtn.Text = "[OFF] AUTO SWING"
+    swingToggleBtn.Parent = mainFrame
+    
+    local function UpdateSwingButtonUI()
+        if Config.SwingEnabled then
+            swingToggleBtn.BackgroundColor3 = Color3.fromRGB(200, 100, 0)
+            swingToggleBtn.Text = "[ON] AUTO SWING"
+        else
+            swingToggleBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+            swingToggleBtn.Text = "[OFF] AUTO SWING"
+        end
+    end
+    
+    swingToggleBtn.MouseButton1Click:Connect(function()
+        Config.SwingEnabled = not Config.SwingEnabled
+        UpdateSwingButtonUI()
+        print("[SWING] Toggled:", Config.SwingEnabled)
+        
+        if Config.SwingEnabled then
+            task.spawn(AutoSwing)
+        else
+            SwingLoopActive = false
+        end
+    end)
+    
+    -- Status & Info
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Name = "StatusLabel"
+    statusLabel.Size = UDim2.new(0.9, 0, 0.3, -350)
+    statusLabel.Position = UDim2.new(0.05, 0, 0, 305)
+    statusLabel.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    statusLabel.BorderSizePixel = 1
+    statusLabel.BorderColor3 = Color3.fromRGB(100, 100, 100)
+    statusLabel.TextColor3 = Color3.fromRGB(100, 200, 255)
+    statusLabel.TextSize = 11
+    statusLabel.Font = Enum.Font.Gotham
+    statusLabel.TextWrapped = true
+    statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    statusLabel.TextYAlignment = Enum.TextYAlignment.Top
+    statusLabel.Text = "Status: Ready\n\nSettings:\nDelay: 2s\nPohon Dist: 9st\nBatu Dist: 13st"
+    statusLabel.Parent = mainFrame
+    
+    -- Update status real-time
+    local updateConnection
+    updateConnection = RunService.Heartbeat:Connect(function()
+        local teleportStatus = Config.TeleportEnabled and "ON" or "OFF"
+        local swingStatus = Config.SwingEnabled and "ON" or "OFF"
+        local nearbyCount = #GetNearbyResources()
+        local batuStatus = Config.SelectedLocations.BatuBesar and "✓" or "✗"
+        local pohonStatus = Config.SelectedLocations.PohonBesar and "✓" or "✗"
+        
+        statusLabel.Text = string.format([[STATUS:
+Teleport: %s
+Swing: %s
+Nearby: %d
+
+SELECTED:
+%s Batu Besar
+%s Pohon Besar
+
+SETTINGS:
+Delay: %ds
+Pohon: %dst
+Batu: %dst]], teleportStatus, swingStatus, nearbyCount, batuStatus, pohonStatus, Config.TeleportDelay, Config.ProximityDistance.PohonBesar, Config.ProximityDistance.BatuBesar)
+    end)
+    
+    -- Close Button
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Name = "CloseBtn"
+    closeBtn.Size = UDim2.new(1, 0, 0, 40)
+    closeBtn.Position = UDim2.new(0, 0, 1, -40)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    closeBtn.TextSize = 14
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.Text = "CLOSE GUI"
+    closeBtn.Parent = mainFrame
+    
+    closeBtn.MouseButton1Click:Connect(function()
+        print("[GUI] Closing...")
+        Config.TeleportEnabled = false
+        Config.SwingEnabled = false
+        TeleportLoopActive = false
+        SwingLoopActive = false
+        if updateConnection then updateConnection:Disconnect() end
+        screenGui:Destroy()
+    end)
+    
+    UpdateTeleportButtonUI()
+    UpdateSwingButtonUI()
+    UpdateBatuCheck()
+    UpdatePohonCheck()
+    
+    print("[GUI] ✓ GUI created successfully!")
+end
+
+-- ============================================
+-- CHARACTER RESPAWN
+-- ============================================
+
+Player.CharacterAdded:Connect(function(newCharacter)
+    Character = newCharacter
+    RootPart = Character:WaitForChild("HumanoidRootPart")
+    Humanoid = Character:WaitForChild("Humanoid")
+    print("[CHARACTER] Respawned")
+end)
+
+-- ============================================
+-- INITIALIZE
+-- ============================================
+
+task.wait(2)
+print("Creating GUI...")
+CreateGui()
+print("Script ready!")
