@@ -1,0 +1,523 @@
+-- AutoTeleport Executor + Auto Hold E + "Only trigger when distance < X"
+-- Paste ke executor (Arceus). Jalankan setelah character spawn.
+
+local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
+local workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local t0 = tick()
+while not player and tick() - t0 < 10 do task.wait(0.1); player = Players.LocalPlayer end
+if not player then
+    local pls = Players:GetPlayers()
+    player = pls[1]
+end
+
+-- Helper: scan parts
+local function getParts()
+    local parts = { Batu = {}, Batang = {} }
+    local bahan = workspace:FindFirstChild("BahanCraft")
+    if not bahan then return parts end
+
+    for _, desc in ipairs(bahan:GetDescendants()) do
+        if desc:IsA("BasePart") then
+            if desc.Name == "Batu" then
+                table.insert(parts.Batu, desc)
+            elseif desc.Name == "Batang" then
+                table.insert(parts.Batang, desc)
+            end
+        end
+    end
+
+    return parts
+end
+
+-- Teleport util (tetap sama seperti sebelumnya)
+local function safeTeleportTo(part)
+    if not part or not part:IsA("BasePart") then return false, "Invalid target" end
+    local char = player and player.Character
+    if not char then return false, "Character not found" end
+    local hrp = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
+    if not hrp then return false, "Humanoid root not found" end
+
+    local sizeX, sizeZ = part.Size.X, part.Size.Z
+    local horizHalf = math.max(sizeX, sizeZ) / 2
+    local sideExtra = 3
+    local extraForward = 0
+    if part.Name == "Batang" then extraForward = 3 end
+    local function computeDist() return math.max(1, horizHalf + sideExtra - extraForward) end
+
+    local tryHeightAbove = 50
+    local raycastDown = -Vector3.new(0, 200, 0)
+
+    local directions = {
+        part.CFrame.RightVector,
+        -part.CFrame.RightVector,
+        part.CFrame.LookVector,
+        -part.CFrame.LookVector,
+    }
+
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+    rayParams.FilterDescendantsInstances = { char, part }
+
+    for _, dir in ipairs(directions) do
+        local dist = computeDist()
+        local candidateXZ = part.Position + dir * dist
+        local origin = candidateXZ + Vector3.new(0, tryHeightAbove, 0)
+        local result = workspace:Raycast(origin, raycastDown, rayParams)
+        if result and result.Position then
+            local groundY = result.Position.Y
+            local targetPos = Vector3.new(candidateXZ.X, groundY + 2.2, candidateXZ.Z)
+            local lookAt = Vector3.new(part.Position.X, targetPos.Y, part.Position.Z)
+            local targetCFrame = CFrame.new(targetPos, lookAt)
+            local ok, err = pcall(function() hrp.CFrame = targetCFrame end)
+            if ok then
+                return true, "Teleported beside part (raycast)"
+            end
+        end
+    end
+
+    do
+        local dist = computeDist()
+        local dir = part.CFrame.RightVector
+        local candidatePos = part.Position + dir * dist
+        candidatePos = Vector3.new(candidatePos.X, part.Position.Y + 2.5, candidatePos.Z)
+        local lookAt = Vector3.new(part.Position.X, candidatePos.Y, part.Position.Z)
+        local targetCFrame = CFrame.new(candidatePos, lookAt)
+        local ok, err = pcall(function() hrp.CFrame = targetCFrame end)
+        if ok then
+            return true, "Teleported beside part (fallback)"
+        else
+            return false, tostring(err)
+        end
+    end
+end
+
+-- Utility: get reasonable world position for an Instance (BasePart ancestor or Model.PrimaryPart)
+local function getWorldPositionFromInstance(inst)
+    if not inst then return nil end
+    if inst:IsA("BasePart") then return inst.Position end
+    -- search ancestors for BasePart
+    local cur = inst
+    for i = 1, 6 do -- depth safety
+        if not cur then break end
+        if cur:IsA("BasePart") then return cur.Position end
+        cur = cur.Parent
+    end
+    -- if it's a Model, try PrimaryPart
+    local mdl = inst
+    while mdl and not mdl:IsA("Workspace") do
+        if mdl:IsA("Model") and mdl.PrimaryPart then return mdl.PrimaryPart.Position end
+        mdl = mdl.Parent
+    end
+    return nil
+end
+
+-- Auto Hold util
+local function triggerPromptsOnPart(part, holdDuration, distanceEnabled, maxDist)
+    if not part then return false, "no part" end
+    local prompts = {}
+    for _,desc in ipairs(part:GetDescendants()) do
+        if desc:IsA("ProximityPrompt") then
+            table.insert(prompts, desc)
+        end
+    end
+    if #prompts == 0 then return false, "no prompts" end
+
+    local char = player and player.Character
+    local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso"))
+    for _,prompt in ipairs(prompts) do
+        if distanceEnabled and hrp then
+            local pos = getWorldPositionFromInstance(prompt)
+            if pos then
+                local dist = (hrp.Position - pos).Magnitude
+                if dist > maxDist then
+                    -- skip this prompt due to distance
+                    return false, "skipped_by_distance"
+                end
+            end
+        end
+        local okBegin, errBegin = pcall(function() prompt:InputHoldBegin() end)
+        if okBegin then
+            task.wait(holdDuration)
+            pcall(function() prompt:InputHoldEnd() end)
+        else
+            -- try InputHoldEnd anyway after tiny wait
+            task.wait(holdDuration)
+            pcall(function() prompt:InputHoldEnd() end)
+        end
+    end
+    return true, "triggered_prompts"
+end
+
+-- trigger generic prompt instance (when scanning all prompts)
+local function triggerPromptInstance(prompt, holdDuration, distanceEnabled, maxDist)
+    if not prompt or not prompt:IsA("ProximityPrompt") then return false, "invalid" end
+    local char = player and player.Character
+    local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso"))
+    if distanceEnabled and hrp then
+        local pos = getWorldPositionFromInstance(prompt)
+        if pos then
+            local dist = (hrp.Position - pos).Magnitude
+            if dist > maxDist then
+                return false, "skipped_by_distance"
+            end
+        end
+    end
+    local okBegin = false
+    pcall(function() prompt:InputHoldBegin(); okBegin = true end)
+    if okBegin then
+        task.wait(holdDuration)
+        pcall(function() prompt:InputHoldEnd() end)
+        return true, "triggered"
+    else
+        -- fallback: try InputHoldEnd after wait
+        task.wait(holdDuration)
+        pcall(function() prompt:InputHoldEnd() end)
+        return false, "failed_begin"
+    end
+end
+
+-- Build GUI (executor) with distance option
+local function createGui()
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "AutoTeleportGui_AutoHoldE_Distance"
+    screenGui.ResetOnSpawn = false
+
+    pcall(function() screenGui.Parent = CoreGui end)
+    if not screenGui.Parent then
+        local pg = player and player:FindFirstChild("PlayerGui")
+        if pg then screenGui.Parent = pg else screenGui.Parent = CoreGui end
+    end
+
+    local protector = (syn and syn.protect_gui) or (protect_gui) or (gethui and gethui)
+    if protector and type(protector) == "function" then pcall(function() protector(screenGui) end) end
+
+    local window = Instance.new("Frame", screenGui)
+    window.Name = "Window"; window.Size = UDim2.new(0,420,0,460); window.Position = UDim2.new(0.6,0,0.05,0)
+    window.BackgroundColor3 = Color3.fromRGB(28,28,30); window.BorderSizePixel = 0
+    Instance.new("UICorner", window).CornerRadius = UDim.new(0,8)
+
+    local titleBar = Instance.new("Frame", window); titleBar.Name = "TitleBar"; titleBar.Size = UDim2.new(1,0,0,34); titleBar.BackgroundColor3 = Color3.fromRGB(22,22,24)
+    local title = Instance.new("TextLabel", titleBar); title.Name = "Title"; title.Text = "Auto Teleport + AutoHold E (Distance)"; title.Font = Enum.Font.SourceSansBold; title.TextSize = 16
+    title.TextColor3 = Color3.fromRGB(220,220,220); title.BackgroundTransparency = 1; title.Size = UDim2.new(1,-80,1,0); title.Position = UDim2.new(0,8,0,0); title.TextXAlignment = Enum.TextXAlignment.Left
+
+    local closeBtn = Instance.new("TextButton", titleBar); closeBtn.Name = "Close"; closeBtn.Text = "✕"; closeBtn.Size = UDim2.new(0,28,0,28); closeBtn.Position = UDim2.new(1,-36,0,3)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(200,70,70); closeBtn.TextColor3 = Color3.fromRGB(255,255,255); Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0,6)
+
+    local minBtn = Instance.new("TextButton", titleBar); minBtn.Name = "Minimize"; minBtn.Text = "—"; minBtn.Size = UDim2.new(0,28,0,28); minBtn.Position = UDim2.new(1,-72,0,3)
+    minBtn.BackgroundColor3 = Color3.fromRGB(120,120,120); minBtn.TextColor3 = Color3.fromRGB(255,255,255); Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0,6)
+
+    local content = Instance.new("Frame", window); content.Name = "Content"; content.Size = UDim2.new(1,-12,1,-64); content.Position = UDim2.new(0,6,0,40); content.BackgroundTransparency = 1
+
+    local leftPane = Instance.new("Frame", content); leftPane.Name = "LeftPane"; leftPane.Size = UDim2.new(0.5,-8,1,0); leftPane.Position = UDim2.new(0,0,0,0)
+    leftPane.BackgroundColor3 = Color3.fromRGB(30,30,32); Instance.new("UICorner", leftPane).CornerRadius = UDim.new(0,6)
+
+    local rightPane = Instance.new("Frame", content); rightPane.Name = "RightPane"; rightPane.Size = UDim2.new(0.5,-8,1,0); rightPane.Position = UDim2.new(0.5,8,0,0)
+    rightPane.BackgroundColor3 = Color3.fromRGB(30,30,32); Instance.new("UICorner", rightPane).CornerRadius = UDim.new(0,6)
+
+    local batuLabel = Instance.new("TextLabel", leftPane); batuLabel.Text = "Batu"; batuLabel.Font = Enum.Font.SourceSansBold; batuLabel.TextSize = 14; batuLabel.TextColor3 = Color3.fromRGB(230,230,230)
+    batuLabel.BackgroundTransparency = 1; batuLabel.Size = UDim2.new(1,-8,0,28); batuLabel.Position = UDim2.new(0,8,0,8); batuLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local batangLabel = Instance.new("TextLabel", rightPane); batangLabel.Text = "Batang"; batangLabel.Font = Enum.Font.SourceSansBold; batangLabel.TextSize = 14; batangLabel.TextColor3 = Color3.fromRGB(230,230,230)
+    batangLabel.BackgroundTransparency = 1; batangLabel.Size = UDim2.new(1,-8,0,28); batangLabel.Position = UDim2.new(0,8,0,8); batangLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local function makeScroll(parent)
+        local sc = Instance.new("ScrollingFrame", parent)
+        sc.Size = UDim2.new(1,-16,1,-220); sc.Position = UDim2.new(0,8,0,40); sc.BackgroundTransparency = 1; sc.ScrollBarThickness = 6
+        local layout = Instance.new("UIListLayout", sc); layout.SortOrder = Enum.SortOrder.LayoutOrder; layout.Padding = UDim.new(0,6)
+        return sc
+    end
+
+    local batuScroll = makeScroll(leftPane)
+    local batangScroll = makeScroll(rightPane)
+
+    -- controls
+    local controlsFrame = Instance.new("Frame", rightPane); controlsFrame.Size = UDim2.new(1,-16,0,140); controlsFrame.Position = UDim2.new(0,8,1,-148); controlsFrame.BackgroundTransparency = 1
+
+    local delayLabel = Instance.new("TextLabel", controlsFrame); delayLabel.Text = "Delay (detik):"; delayLabel.TextColor3 = Color3.fromRGB(220,220,220); delayLabel.Font = Enum.Font.SourceSans; delayLabel.TextSize = 14
+    delayLabel.BackgroundTransparency = 1; delayLabel.Size = UDim2.new(0.5,0,0,24); delayLabel.Position = UDim2.new(0,0,0,0); delayLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local delayBox = Instance.new("TextBox", controlsFrame); delayBox.Text = "15"; delayBox.PlaceholderText = "10-20"; delayBox.Font = Enum.Font.SourceSans; delayBox.TextSize = 14
+    delayBox.TextColor3 = Color3.fromRGB(20,20,20); delayBox.BackgroundColor3 = Color3.fromRGB(240,240,240); delayBox.Size = UDim2.new(0.5,-8,0,28); delayBox.Position = UDim2.new(0.5,8,0,0); delayBox.ClearTextOnFocus = false
+    Instance.new("UICorner", delayBox).CornerRadius = UDim.new(0,6)
+
+    local selectAllBatu = Instance.new("TextButton", leftPane); selectAllBatu.Text = "Pilih Semua"; selectAllBatu.Font = Enum.Font.SourceSans; selectAllBatu.TextSize = 13
+    selectAllBatu.Size = UDim2.new(0,100,0,26); selectAllBatu.Position = UDim2.new(1,-108,0,8); selectAllBatu.BackgroundColor3 = Color3.fromRGB(90,140,255); selectAllBatu.TextColor3 = Color3.fromRGB(255,255,255)
+    Instance.new("UICorner", selectAllBatu).CornerRadius = UDim.new(0,6)
+
+    local selectAllBatang = Instance.new("TextButton", rightPane); selectAllBatang.Text = "Pilih Semua"; selectAllBatang.Font = Enum.Font.SourceSans; selectAllBatang.TextSize = 13
+    selectAllBatang.Size = UDim2.new(0,100,0,26); selectAllBatang.Position = UDim2.new(1,-108,0,8); selectAllBatang.BackgroundColor3 = Color3.fromRGB(90,140,255); selectAllBatang.TextColor3 = Color3.fromRGB(255,255,255)
+    Instance.new("UICorner", selectAllBatang).CornerRadius = UDim.new(0,6)
+
+    local startBtn = Instance.new("TextButton", controlsFrame); startBtn.Text = "Start Teleport"; startBtn.Font = Enum.Font.SourceSansBold; startBtn.TextSize = 14
+    startBtn.Size = UDim2.new(0.48,-6,0,32); startBtn.Position = UDim2.new(0,0,0,34); startBtn.BackgroundColor3 = Color3.fromRGB(80,200,120); startBtn.TextColor3 = Color3.fromRGB(20,20,20)
+    Instance.new("UICorner", startBtn).CornerRadius = UDim.new(0,6)
+
+    local stopBtn = Instance.new("TextButton", controlsFrame); stopBtn.Text = "Stop Teleport"; stopBtn.Font = Enum.Font.SourceSansBold; stopBtn.TextSize = 14
+    stopBtn.Size = UDim2.new(0.48,-6,0,32); stopBtn.Position = UDim2.new(0.52,6,0,34); stopBtn.BackgroundColor3 = Color3.fromRGB(220,80,80); stopBtn.TextColor3 = Color3.fromRGB(255,255,255)
+    Instance.new("UICorner", stopBtn).CornerRadius = UDim.new(0,6)
+
+    local statusLabel = Instance.new("TextLabel", content); statusLabel.Text = "Status: Idle"; statusLabel.Font = Enum.Font.SourceSans; statusLabel.TextSize = 14
+    statusLabel.TextColor3 = Color3.fromRGB(220,220,220); statusLabel.BackgroundTransparency = 1; statusLabel.Size = UDim2.new(1,0,0,24); statusLabel.Position = UDim2.new(0,6,1,-30); statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    -- Auto Hold Frame
+    local autoHoldFrame = Instance.new("Frame", rightPane); autoHoldFrame.Size = UDim2.new(1,-16,0,120); autoHoldFrame.Position = UDim2.new(0,8,1,-280); autoHoldFrame.BackgroundTransparency = 1
+
+    local autoHoldLabel = Instance.new("TextLabel", autoHoldFrame); autoHoldLabel.Text = "Auto Hold E (ProximityPrompt)"; autoHoldLabel.Font = Enum.Font.SourceSansBold; autoHoldLabel.TextSize = 14
+    autoHoldLabel.TextColor3 = Color3.fromRGB(230,230,230); autoHoldLabel.BackgroundTransparency = 1; autoHoldLabel.Position = UDim2.new(0,0,0,0); autoHoldLabel.Size = UDim2.new(1,0,0,20)
+
+    local autoHoldToggle = Instance.new("TextButton", autoHoldFrame); autoHoldToggle.Text = "OFF"; autoHoldToggle.Font = Enum.Font.SourceSansBold; autoHoldToggle.TextSize = 14
+    autoHoldToggle.Size = UDim2.new(0,100,0,28); autoHoldToggle.Position = UDim2.new(0,0,0,26); autoHoldToggle.BackgroundColor3 = Color3.fromRGB(150,150,150); autoHoldToggle.TextColor3 = Color3.fromRGB(255,255,255)
+    Instance.new("UICorner", autoHoldToggle).CornerRadius = UDim.new(0,6)
+
+    local holdLabel = Instance.new("TextLabel", autoHoldFrame); holdLabel.Text = "Hold dur (s):"; holdLabel.Font = Enum.Font.SourceSans; holdLabel.TextSize = 14
+    holdLabel.TextColor3 = Color3.fromRGB(220,220,220); holdLabel.BackgroundTransparency = 1; holdLabel.Position = UDim2.new(0,112,0,26); holdLabel.Size = UDim2.new(0,80,0,20); holdLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local holdBox = Instance.new("TextBox", autoHoldFrame); holdBox.Text = "1"; holdBox.PlaceholderText = "1"; holdBox.Font = Enum.Font.SourceSans; holdBox.TextSize = 14
+    holdBox.Size = UDim2.new(0,60,0,26); holdBox.Position = UDim2.new(0,200,0,24); holdBox.BackgroundColor3 = Color3.fromRGB(240,240,240); holdBox.ClearTextOnFocus = false
+    Instance.new("UICorner", holdBox).CornerRadius = UDim.new(0,6)
+
+    local intervalLabel = Instance.new("TextLabel", autoHoldFrame); intervalLabel.Text = "Interval (s):"; intervalLabel.Font = Enum.Font.SourceSans; intervalLabel.TextSize = 14
+    intervalLabel.TextColor3 = Color3.fromRGB(220,220,220); intervalLabel.BackgroundTransparency = 1; intervalLabel.Position = UDim2.new(0,112,0,56); intervalLabel.Size = UDim2.new(0,80,0,20); intervalLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local intervalBox = Instance.new("TextBox", autoHoldFrame); intervalBox.Text = "1"; intervalBox.PlaceholderText = "1"; intervalBox.Font = Enum.Font.SourceSans; intervalBox.TextSize = 14
+    intervalBox.Size = UDim2.new(0,60,0,26); intervalBox.Position = UDim2.new(0,200,0,54); intervalBox.BackgroundColor3 = Color3.fromRGB(240,240,240); intervalBox.ClearTextOnFocus = false
+    Instance.new("UICorner", intervalBox).CornerRadius = UDim.new(0,6)
+
+    -- Distance option
+    local distToggleLabel = Instance.new("TextLabel", autoHoldFrame); distToggleLabel.Text = "Only trigger when distance <"; distToggleLabel.Font = Enum.Font.SourceSans; distToggleLabel.TextSize = 14
+    distToggleLabel.TextColor3 = Color3.fromRGB(220,220,220); distToggleLabel.BackgroundTransparency = 1; distToggleLabel.Position = UDim2.new(0,0,0,86); distToggleLabel.Size = UDim2.new(0,200,0,18); distToggleLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    local distanceToggle = Instance.new("TextButton", autoHoldFrame); distanceToggle.Text = "ON"; distanceToggle.Font = Enum.Font.SourceSansBold; distanceToggle.TextSize = 14
+    distanceToggle.Size = UDim2.new(0,50,0,20); distanceToggle.Position = UDim2.new(0,210,0,86); distanceToggle.BackgroundColor3 = Color3.fromRGB(80,200,120); distanceToggle.TextColor3 = Color3.fromRGB(20,20,20)
+    Instance.new("UICorner", distanceToggle).CornerRadius = UDim.new(0,6)
+
+    local distanceBox = Instance.new("TextBox", autoHoldFrame); distanceBox.Text = "13"; distanceBox.PlaceholderText = "13"; distanceBox.Font = Enum.Font.SourceSans; distanceBox.TextSize = 14
+    distanceBox.Size = UDim2.new(0,60,0,20); distanceBox.Position = UDim2.new(0,270,0,86); distanceBox.BackgroundColor3 = Color3.fromRGB(240,240,240); distanceBox.ClearTextOnFocus = false
+    Instance.new("UICorner", distanceBox).CornerRadius = UDim.new(0,6)
+
+    local applyToSelectedLabel = Instance.new("TextLabel", autoHoldFrame); applyToSelectedLabel.Text = "Only on selected parts (if none selected, scan all)"; applyToSelectedLabel.Font = Enum.Font.SourceSans; applyToSelectedLabel.TextSize = 12
+    applyToSelectedLabel.TextColor3 = Color3.fromRGB(200,200,200); applyToSelectedLabel.BackgroundTransparency = 1; applyToSelectedLabel.Position = UDim2.new(0,0,0,108); applyToSelectedLabel.Size = UDim2.new(1,0,0,12); applyToSelectedLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+    -- make row helper
+    local function makeRow(parent, part)
+        local row = Instance.new("Frame", parent); row.Size = UDim2.new(1,-12,0,28); row.BackgroundTransparency = 1
+        local check = Instance.new("TextButton", row); check.Size = UDim2.new(0,26,0,26); check.Position = UDim2.new(0,0,0,0); check.Text = ""
+        check.BackgroundColor3 = Color3.fromRGB(50,50,50); Instance.new("UICorner", check).CornerRadius = UDim.new(0,4)
+        local label = Instance.new("TextLabel", row); label.Size = UDim2.new(1,-36,1,0); label.Position = UDim2.new(0,36,0,0)
+        label.Text = part.Name; label.Font = Enum.Font.SourceSans; label.TextSize = 14; label.TextColor3 = Color3.fromRGB(230,230,230); label.BackgroundTransparency = 1; label.TextXAlignment = Enum.TextXAlignment.Left
+        local selected = false
+        local function updateAppearance() if selected then check.BackgroundColor3 = Color3.fromRGB(80,200,120) else check.BackgroundColor3 = Color3.fromRGB(50,50,50) end end
+        check.MouseButton1Click:Connect(function() selected = not selected; updateAppearance() end)
+        label.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then selected = not selected; updateAppearance() end end)
+        return { Part = part, Row = row, IsSelected = function() return selected end, SetSelected = function(v) selected = v; updateAppearance() end }
+    end
+
+    local partRows = { Batu = {}, Batang = {} }
+
+    local function populate()
+        for _,v in ipairs(batuScroll:GetChildren()) do if v:IsA("Frame") then v:Destroy() end end
+        for _,v in ipairs(batangScroll:GetChildren()) do if v:IsA("Frame") then v:Destroy() end end
+        partRows = { Batu = {}, Batang = {} }
+        local parts = getParts()
+        local function distSort(a,b)
+            local pa, pb = a.Position, b.Position
+            local ca = player and player.Character and (player.Character:FindFirstChild("HumanoidRootPart") and (pa - player.Character.HumanoidRootPart.Position).Magnitude) or pa.Magnitude
+            local cb = player and player.Character and (player.Character:FindFirstChild("HumanoidRootPart") and (pb - player.Character.HumanoidRootPart.Position).Magnitude) or pb.Magnitude
+            return ca < cb
+        end
+        pcall(function() table.sort(parts.Batu, distSort); table.sort(parts.Batang, distSort) end)
+        for _,p in ipairs(parts.Batu) do table.insert(partRows.Batu, makeRow(batuScroll, p)) end
+        for _,p in ipairs(parts.Batang) do table.insert(partRows.Batang, makeRow(batangScroll, p)) end
+    end
+
+    populate()
+
+    selectAllBatu.MouseButton1Click:Connect(function()
+        local anyUnselected = false
+        for _,r in ipairs(partRows.Batu) do if not r.IsSelected() then anyUnselected = true; break end end
+        for _,r in ipairs(partRows.Batu) do r.SetSelected(anyUnselected) end
+    end)
+    selectAllBatang.MouseButton1Click:Connect(function()
+        local anyUnselected = false
+        for _,r in ipairs(partRows.Batang) do if not r.IsSelected() then anyUnselected = true; break end end
+        for _,r in ipairs(partRows.Batang) do r.SetSelected(anyUnselected) end
+    end)
+
+    title.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton2 then populate(); statusLabel.Text = "Status: Refreshed daftar parts" end end)
+
+    -- drag
+    local dragging, dragStart, startPos = false, nil, nil
+    titleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true; dragStart = input.Position; startPos = window.Position
+            input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragging = false end end)
+        end
+    end)
+    titleBar.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - dragStart
+            local newX = startPos.X.Offset + delta.X
+            local newY = startPos.Y.Offset + delta.Y
+            newX = math.clamp(newX, 0, math.max(0, workspace.CurrentCamera.ViewportSize.X - window.AbsoluteSize.X))
+            newY = math.clamp(newY, 0, math.max(0, workspace.CurrentCamera.ViewportSize.Y - window.AbsoluteSize.Y))
+            window.Position = UDim2.new(0, newX, 0, newY)
+        end
+    end)
+
+    local minimized = false
+    minBtn.MouseButton1Click:Connect(function()
+        minimized = not minimized
+        if minimized then content.Visible = false; window.Size = UDim2.new(window.Size.X.Scale, window.Size.X.Offset, 0, 34)
+        else content.Visible = true; window.Size = UDim2.new(0,420,0,460) end
+    end)
+
+    closeBtn.MouseButton1Click:Connect(function() pcall(function() screenGui:Destroy() end) end)
+
+    -- teleport loop
+    local running = false
+    local function getSelectedParts()
+        local list = {}
+        for _,r in ipairs(partRows.Batu) do if r.IsSelected() and r.Part and r.Part.Parent then table.insert(list, r.Part) end end
+        for _,r in ipairs(partRows.Batang) do if r.IsSelected() and r.Part and r.Part.Parent then table.insert(list, r.Part) end end
+        return list
+    end
+
+    local function waitWithCountdown(seconds, statusPrefix)
+        local start = tick()
+        while tick() - start < seconds do
+            local remaining = math.max(0, seconds - (tick() - start))
+            statusLabel.Text = string.format("%s - Next in: %.1f s", statusPrefix, remaining)
+            task.wait(0.1)
+            if not running then break end
+        end
+    end
+
+    startBtn.MouseButton1Click:Connect(function()
+        if running then return end
+        local d = tonumber(delayBox.Text) or 15
+        d = math.clamp(d, 1, 300)
+        local selected = getSelectedParts()
+        if #selected == 0 then statusLabel.Text = "Status: Tidak ada part terpilih!"; return end
+
+        running = true
+        statusLabel.Text = "Status: Mulai teleport..."
+        task.spawn(function()
+            while running do
+                local targets = getSelectedParts()
+                if #targets == 0 then statusLabel.Text = "Status: Tidak ada target terpilih, berhenti."; running = false; break end
+                for i, part in ipairs(targets) do
+                    if not running then break end
+                    if part and part.Parent then
+                        statusLabel.Text = string.format("Status: Teleport ke '%s' (%d/%d)", part.Name, i, #targets)
+                        local ok, msg = safeTeleportTo(part)
+                        if not ok then statusLabel.Text = "Error teleport: " .. tostring(msg) end
+                        waitWithCountdown(d, "Status: Teleport berjalan")
+                    else
+                        statusLabel.Text = "Status: Target tidak ditemukan, melewatkan..."
+                        task.wait(0.5)
+                    end
+                end
+            end
+            statusLabel.Text = "Status: Stopped"
+        end)
+    end)
+
+    stopBtn.MouseButton1Click:Connect(function()
+        if running then running = false; statusLabel.Text = "Status: Menghentikan..." end
+    end)
+
+    -- Auto Hold E loop with distance option
+    local autoHoldRunning = false
+    local function getSelectedPartsForAutoHold()
+        return getSelectedParts()
+    end
+
+    autoHoldToggle.MouseButton1Click:Connect(function()
+        autoHoldRunning = not autoHoldRunning
+        if autoHoldRunning then
+            autoHoldToggle.Text = "ON"; autoHoldToggle.BackgroundColor3 = Color3.fromRGB(80,200,120)
+            task.spawn(function()
+                while autoHoldRunning do
+                    local holdDur = tonumber(holdBox.Text) or 1
+                    holdDur = math.clamp(holdDur, 0.1, 60)
+                    local interval = tonumber(intervalBox.Text) or 1
+                    interval = math.clamp(interval, 0.1, 600)
+                    local distanceEnabled = (distanceToggle.Text == "ON")
+                    local maxDist = tonumber(distanceBox.Text) or 13
+                    maxDist = math.clamp(maxDist, 0.5, 1000)
+
+                    local targets = getSelectedPartsForAutoHold()
+                    if #targets == 0 then
+                        local bahan = workspace:FindFirstChild("BahanCraft")
+                        if bahan then
+                            for _,desc in ipairs(bahan:GetDescendants()) do
+                                if not autoHoldRunning then break end
+                                if desc:IsA("ProximityPrompt") then
+                                    local ok, msg = triggerPromptInstance(desc, holdDur, distanceEnabled, maxDist)
+                                    if ok then
+                                        statusLabel.Text = string.format("AutoHold: triggered prompt at %s", tostring(getWorldPositionFromInstance(desc) and tostring(math.floor((player.Character and (player.Character:FindFirstChild("HumanoidRootPart") and (player.Character.HumanoidRootPart.Position - getWorldPositionFromInstance(desc)).Magnitude) or 0) ) ) ) )
+                                    else
+                                        if msg == "skipped_by_distance" then
+                                            statusLabel.Text = "AutoHold: skipped prompt (too far)"
+                                        else
+                                            statusLabel.Text = "AutoHold: failed to trigger prompt"
+                                        end
+                                    end
+                                end
+                                task.wait(0.05)
+                            end
+                        end
+                    else
+                        for _,part in ipairs(targets) do
+                            if not autoHoldRunning then break end
+                            local ok, msg = triggerPromptsOnPart(part, holdDur, distanceEnabled, maxDist)
+                            if ok then
+                                statusLabel.Text = string.format("AutoHold: triggered prompts on %s", part.Name)
+                            else
+                                if msg == "skipped_by_distance" then
+                                    statusLabel.Text = string.format("AutoHold: skipped %s (too far)", part.Name)
+                                else
+                                    statusLabel.Text = string.format("AutoHold: %s (%s)", tostring(msg), part.Name)
+                                end
+                            end
+                            task.wait(0.1)
+                        end
+                    end
+
+                    local elapsed = 0
+                    while elapsed < interval and autoHoldRunning do
+                        task.wait(0.1); elapsed = elapsed + 0.1
+                    end
+                end
+                statusLabel.Text = "Status: AutoHold stopped"
+            end)
+        else
+            autoHoldToggle.Text = "OFF"; autoHoldToggle.BackgroundColor3 = Color3.fromRGB(150,150,150)
+        end
+    end)
+
+    -- distance toggle button behavior
+    distanceToggle.MouseButton1Click:Connect(function()
+        if distanceToggle.Text == "ON" then
+            distanceToggle.Text = "OFF"; distanceToggle.BackgroundColor3 = Color3.fromRGB(150,150,150)
+        else
+            distanceToggle.Text = "ON"; distanceToggle.BackgroundColor3 = Color3.fromRGB(80,200,120)
+        end
+    end)
+
+    local bahan = workspace:FindFirstChild("BahanCraft")
+    if bahan then
+        bahan.DescendantAdded:Connect(function() task.wait(0.25); populate() end)
+        bahan.DescendantRemoving:Connect(function() task.wait(0.25); populate() end)
+    end
+
+    statusLabel.Text = "Status: Idle - Klik item untuk memilih. Right-click title untuk refresh."
+    return screenGui
+end
+
+local ok, res = pcall(createGui)
+if not ok then warn("Failed creating GUI:", res) end
