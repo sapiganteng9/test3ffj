@@ -1,0 +1,564 @@
+-- LocalScript: letakkan di StarterPlayerScripts
+-- Auto teleport GUI untuk parts "Batu" dan "Batang" di Workspace.BahanCraft
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local guiParent = player:WaitForChild("PlayerGui")
+
+-- Utility: cari parts berdasarkan struktur yang diberikan
+local function getParts()
+	local parts = {
+		Batu = {},
+		Batang = {},
+	}
+	local bahan = workspace:FindFirstChild("BahanCraft")
+	if not bahan then return parts end
+
+	-- Batu di BahanCraft.BatuBesar (ambil semua BasePart bernama "Batu")
+	local batuBesar = bahan:FindFirstChild("BatuBesar")
+	if batuBesar then
+		for _,desc in ipairs(batuBesar:GetDescendants()) do
+			if desc:IsA("BasePart") and desc.Name == "Batu" then
+				table.insert(parts.Batu, desc)
+			end
+		end
+	end
+
+	-- Batang di BahanCraft.PohonBesar (ambil semua BasePart bernama "Batang")
+	local pohonBesar = bahan:FindFirstChild("PohonBesar")
+	if pohonBesar then
+		for _,desc in ipairs(pohonBesar:GetDescendants()) do
+			if desc:IsA("BasePart") and desc.Name == "Batang" then
+				table.insert(parts.Batang, desc)
+			end
+		end
+	end
+
+	return parts
+end
+
+-- Create GUI
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "AutoTeleportGui"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = guiParent
+
+-- Main window
+local window = Instance.new("Frame")
+window.Name = "Window"
+window.Size = UDim2.new(0, 420, 0, 380)
+window.Position = UDim2.new(0.6, 0, 0.1, 0)
+window.BackgroundColor3 = Color3.fromRGB(28, 28, 30)
+window.BorderSizePixel = 0
+window.Parent = screenGui
+window.AnchorPoint = Vector2.new(0,0)
+
+-- Rounded UICorner
+local uicorner = Instance.new("UICorner", window)
+uicorner.CornerRadius = UDim.new(0,8)
+
+-- Title bar
+local titleBar = Instance.new("Frame")
+titleBar.Name = "TitleBar"
+titleBar.Size = UDim2.new(1, 0, 0, 34)
+titleBar.BackgroundColor3 = Color3.fromRGB(22,22,24)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = window
+
+local title = Instance.new("TextLabel")
+title.Name = "Title"
+title.Text = "Auto Teleport - BahanCraft"
+title.Font = Enum.Font.SourceSansBold
+title.TextSize = 16
+title.TextColor3 = Color3.fromRGB(220,220,220)
+title.BackgroundTransparency = 1
+title.Size = UDim2.new(1, -80, 1, 0)
+title.Position = UDim2.new(0, 8, 0, 0)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = titleBar
+
+-- Close button
+local closeBtn = Instance.new("TextButton")
+closeBtn.Name = "Close"
+closeBtn.Text = "✕"
+closeBtn.Font = Enum.Font.SourceSansBold
+closeBtn.TextSize = 18
+closeBtn.Size = UDim2.new(0, 28, 0, 28)
+closeBtn.Position = UDim2.new(1, -36, 0, 3)
+closeBtn.BackgroundColor3 = Color3.fromRGB(200,70,70)
+closeBtn.TextColor3 = Color3.fromRGB(255,255,255)
+closeBtn.Parent = titleBar
+closeBtn.AutoButtonColor = true
+local closeCorner = Instance.new("UICorner", closeBtn)
+closeCorner.CornerRadius = UDim.new(0,6)
+
+-- Minimize button
+local minBtn = Instance.new("TextButton")
+minBtn.Name = "Minimize"
+minBtn.Text = "—"
+minBtn.Font = Enum.Font.SourceSansBold
+minBtn.TextSize = 20
+minBtn.Size = UDim2.new(0, 28, 0, 28)
+minBtn.Position = UDim2.new(1, -72, 0, 3)
+minBtn.BackgroundColor3 = Color3.fromRGB(120,120,120)
+minBtn.TextColor3 = Color3.fromRGB(255,255,255)
+minBtn.Parent = titleBar
+minBtn.AutoButtonColor = true
+local minCorner = Instance.new("UICorner", minBtn)
+minCorner.CornerRadius = UDim.new(0,6)
+
+-- Content frame (yang di-minimize / restore)
+local content = Instance.new("Frame")
+content.Name = "Content"
+content.Size = UDim2.new(1, -12, 1, -48)
+content.Position = UDim2.new(0, 6, 0, 40)
+content.BackgroundTransparency = 1
+content.Parent = window
+
+-- Left: lists
+local leftPane = Instance.new("Frame")
+leftPane.Name = "LeftPane"
+leftPane.Size = UDim2.new(0.5, -8, 1, 0)
+leftPane.Position = UDim2.new(0, 0, 0, 0)
+leftPane.BackgroundColor3 = Color3.fromRGB(30,30,32)
+leftPane.BorderSizePixel = 0
+leftPane.Parent = content
+local leftCorner = Instance.new("UICorner", leftPane)
+leftCorner.CornerRadius = UDim.new(0,6)
+
+local rightPane = Instance.new("Frame")
+rightPane.Name = "RightPane"
+rightPane.Size = UDim2.new(0.5, -8, 1, 0)
+rightPane.Position = UDim2.new(0.5, 8, 0, 0)
+rightPane.BackgroundColor3 = Color3.fromRGB(30,30,32)
+rightPane.BorderSizePixel = 0
+rightPane.Parent = content
+local rightCorner = Instance.new("UICorner", rightPane)
+rightCorner.CornerRadius = UDim.new(0,6)
+
+-- Headers
+local batuLabel = Instance.new("TextLabel", leftPane)
+batuLabel.Text = "Batu"
+batuLabel.Font = Enum.Font.SourceSansBold
+batuLabel.TextSize = 14
+batuLabel.TextColor3 = Color3.fromRGB(230,230,230)
+batuLabel.BackgroundTransparency = 1
+batuLabel.Size = UDim2.new(1, -8, 0, 28)
+batuLabel.Position = UDim2.new(0,8,0,8)
+batuLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local batangLabel = Instance.new("TextLabel", rightPane)
+batangLabel.Text = "Batang"
+batangLabel.Font = Enum.Font.SourceSansBold
+batangLabel.TextSize = 14
+batangLabel.TextColor3 = Color3.fromRGB(230,230,230)
+batangLabel.BackgroundTransparency = 1
+batangLabel.Size = UDim2.new(1, -8, 0, 28)
+batangLabel.Position = UDim2.new(0,8,0,8)
+batangLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+-- Scrolling frames for lists
+local function makeScroll(parent)
+	local sc = Instance.new("ScrollingFrame")
+	sc.Size = UDim2.new(1, -16, 1, -48)
+	sc.Position = UDim2.new(0,8,0,40)
+	sc.BackgroundTransparency = 1
+	sc.BorderSizePixel = 0
+	sc.ScrollBarThickness = 6
+	sc.Parent = parent
+
+	local layout = Instance.new("UIListLayout", sc)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Padding = UDim.new(0, 6)
+
+	return sc
+end
+
+local batuScroll = makeScroll(leftPane)
+local batangScroll = makeScroll(rightPane)
+
+-- Controls on rightPane (delay, start/stop, status)
+local controlsFrame = Instance.new("Frame")
+controlsFrame.Size = UDim2.new(1, -16, 0, 140)
+controlsFrame.Position = UDim2.new(0,8,1,-148)
+controlsFrame.BackgroundTransparency = 1
+controlsFrame.Parent = rightPane
+
+-- Delay label + textbox
+local delayLabel = Instance.new("TextLabel", controlsFrame)
+delayLabel.Text = "Delay (detik):"
+delayLabel.TextColor3 = Color3.fromRGB(220,220,220)
+delayLabel.Font = Enum.Font.SourceSans
+delayLabel.TextSize = 14
+delayLabel.BackgroundTransparency = 1
+delayLabel.Size = UDim2.new(0.5, 0, 0, 24)
+delayLabel.Position = UDim2.new(0,0,0,0)
+delayLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local delayBox = Instance.new("TextBox", controlsFrame)
+delayBox.Text = "15"
+delayBox.PlaceholderText = "10-20"
+delayBox.Font = Enum.Font.SourceSans
+delayBox.TextSize = 14
+delayBox.TextColor3 = Color3.fromRGB(20,20,20)
+delayBox.BackgroundColor3 = Color3.fromRGB(240,240,240)
+delayBox.Size = UDim2.new(0.5, -8, 0, 28)
+delayBox.Position = UDim2.new(0.5, 8, 0, 0)
+delayBox.ClearTextOnFocus = false
+local delayCorner = Instance.new("UICorner", delayBox)
+delayCorner.CornerRadius = UDim.new(0,6)
+
+-- Select all buttons
+local selectAllBatu = Instance.new("TextButton", leftPane)
+selectAllBatu.Text = "Pilih Semua"
+selectAllBatu.Font = Enum.Font.SourceSans
+selectAllBatu.TextSize = 13
+selectAllBatu.Size = UDim2.new(0, 100, 0, 26)
+selectAllBatu.Position = UDim2.new(1, -108, 0, 8)
+selectAllBatu.BackgroundColor3 = Color3.fromRGB(90, 140, 255)
+selectAllBatu.TextColor3 = Color3.fromRGB(255,255,255)
+local selAllCorner = Instance.new("UICorner", selectAllBatu)
+selAllCorner.CornerRadius = UDim.new(0,6)
+
+local selectAllBatang = Instance.new("TextButton", rightPane)
+selectAllBatang.Text = "Pilih Semua"
+selectAllBatang.Font = Enum.Font.SourceSans
+selectAllBatang.TextSize = 13
+selectAllBatang.Size = UDim2.new(0, 100, 0, 26)
+selectAllBatang.Position = UDim2.new(1, -108, 0, 8)
+selectAllBatang.BackgroundColor3 = Color3.fromRGB(90, 140, 255)
+selectAllBatang.TextColor3 = Color3.fromRGB(255,255,255)
+local selAllCorner2 = Instance.new("UICorner", selectAllBatang)
+selAllCorner2.CornerRadius = UDim.new(0,6)
+
+-- Start/Stop buttons
+local startBtn = Instance.new("TextButton", controlsFrame)
+startBtn.Text = "Start"
+startBtn.Font = Enum.Font.SourceSansBold
+startBtn.TextSize = 16
+startBtn.Size = UDim2.new(0.48, -6, 0, 36)
+startBtn.Position = UDim2.new(0, 0, 0, 42)
+startBtn.BackgroundColor3 = Color3.fromRGB(80, 200, 120)
+startBtn.TextColor3 = Color3.fromRGB(20,20,20)
+local startCorner = Instance.new("UICorner", startBtn)
+startCorner.CornerRadius = UDim.new(0,6)
+
+local stopBtn = Instance.new("TextButton", controlsFrame)
+stopBtn.Text = "Stop"
+stopBtn.Font = Enum.Font.SourceSansBold
+stopBtn.TextSize = 16
+stopBtn.Size = UDim2.new(0.48, -6, 0, 36)
+stopBtn.Position = UDim2.new(0.52, 6, 0, 42)
+stopBtn.BackgroundColor3 = Color3.fromRGB(220, 80, 80)
+stopBtn.TextColor3 = Color3.fromRGB(255,255,255)
+local stopCorner = Instance.new("UICorner", stopBtn)
+stopCorner.CornerRadius = UDim.new(0,6)
+
+-- Status
+local statusLabel = Instance.new("TextLabel", controlsFrame)
+statusLabel.Text = "Status: Idle"
+statusLabel.Font = Enum.Font.SourceSans
+statusLabel.TextSize = 14
+statusLabel.TextColor3 = Color3.fromRGB(220,220,220)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Size = UDim2.new(1, 0, 0, 26)
+statusLabel.Position = UDim2.new(0, 0, 0, 90)
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+-- Helper: create checkbox row for a part
+local function makeRow(parent, part)
+	local row = Instance.new("Frame")
+	row.Size = UDim2.new(1, -12, 0, 28)
+	row.BackgroundTransparency = 1
+	row.Parent = parent
+
+	local check = Instance.new("TextButton")
+	check.Size = UDim2.new(0, 26, 0, 26)
+	check.Position = UDim2.new(0, 0, 0, 0)
+	check.Text = ""
+	check.BackgroundColor3 = Color3.fromRGB(50,50,50)
+	check.TextColor3 = Color3.fromRGB(255,255,255)
+	check.Parent = row
+	local cc = Instance.new("UICorner", check)
+	cc.CornerRadius = UDim.new(0,4)
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, -36, 1, 0)
+	label.Position = UDim2.new(0, 36, 0, 0)
+	label.Text = part.Name
+	label.Font = Enum.Font.SourceSans
+	label.TextSize = 14
+	label.TextColor3 = Color3.fromRGB(230,230,230)
+	label.BackgroundTransparency = 1
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Parent = row
+
+	local selected = false
+	local function updateAppearance()
+		if selected then
+			check.BackgroundColor3 = Color3.fromRGB(80,200,120)
+		else
+			check.BackgroundColor3 = Color3.fromRGB(50,50,50)
+		end
+	end
+
+	check.MouseButton1Click:Connect(function()
+		selected = not selected
+		updateAppearance()
+	end)
+
+	-- clicking label also toggle
+	label.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			selected = not selected
+			updateAppearance()
+		end
+	end)
+
+	return {
+		Part = part,
+		Row = row,
+		IsSelected = function() return selected end,
+		SetSelected = function(v) selected = v; updateAppearance() end,
+	}
+end
+
+-- Populate lists
+local partRows = { Batu = {}, Batang = {} }
+local function populate()
+	-- clear
+	for _,v in ipairs(batuScroll:GetChildren()) do if v:IsA("Frame") then v:Destroy() end end
+	for _,v in ipairs(batangScroll:GetChildren()) do if v:IsA("Frame") then v:Destroy() end end
+	partRows = { Batu = {}, Batang = {} }
+
+	local parts = getParts()
+	-- Sort by position Z then X for consistent order (opsional)
+	local function sortByPos(a,b)
+		local pa, pb = a.Position, b.Position
+		if pa.Z == pb.Z then
+			if pa.X == pb.X then
+				return pa.Y < pb.Y
+			else
+				return pa.X < pb.X
+			end
+		else
+			return pa.Z < pb.Z
+		end
+	end
+	table.sort(parts.Batu, sortByPos)
+	table.sort(parts.Batang, sortByPos)
+
+	for _,p in ipairs(parts.Batu) do
+		local r = makeRow(batuScroll, p)
+		table.insert(partRows.Batu, r)
+	end
+	for _,p in ipairs(parts.Batang) do
+		local r = makeRow(batangScroll, p)
+		table.insert(partRows.Batang, r)
+	end
+end
+
+populate()
+
+-- Select All behavior
+selectAllBatu.MouseButton1Click:Connect(function()
+	local anyUnselected = false
+	for _,r in ipairs(partRows.Batu) do
+		if not r.IsSelected() then anyUnselected = true; break end
+	end
+	for _,r in ipairs(partRows.Batu) do
+		r.SetSelected(anyUnselected) -- toggle to select all if any unselected, otherwise deselect all
+	end
+end)
+
+selectAllBatang.MouseButton1Click:Connect(function()
+	local anyUnselected = false
+	for _,r in ipairs(partRows.Batang) do
+		if not r.IsSelected() then anyUnselected = true; break end
+	end
+	for _,r in ipairs(partRows.Batang) do
+		r.SetSelected(anyUnselected)
+	end
+end)
+
+-- Refresh button (double: re-scan workspace if parts changed) -- we'll use right-click on title to refresh
+title.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton2 then
+		populate()
+		statusLabel.Text = "Status: Refreshed daftar parts"
+	end
+end)
+
+-- Dragging window (manual implementation)
+local dragging = false
+local dragStart = nil
+local startPos = nil
+
+titleBar.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = true
+		dragStart = input.Position
+		startPos = window.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				dragging = false
+			end
+		end)
+	end
+end)
+
+titleBar.InputChanged:Connect(function(input)
+	if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+		local delta = input.Position - dragStart
+		local newX = startPos.X.Offset + delta.X
+		local newY = startPos.Y.Offset + delta.Y
+		-- Keep on screen (basic clamp)
+		newX = math.clamp(newX, 0, math.max(0, workspace.CurrentCamera.ViewportSize.X - window.AbsoluteSize.X))
+		newY = math.clamp(newY, 0, math.max(0, workspace.CurrentCamera.ViewportSize.Y - window.AbsoluteSize.Y))
+		window.Position = UDim2.new(0, newX, 0, newY)
+	end
+end)
+
+-- Minimize / Close behavior
+local minimized = false
+minBtn.MouseButton1Click:Connect(function()
+	minimized = not minimized
+	if minimized then
+		content.Visible = false
+		window.Size = UDim2.new(window.Size.X.Scale, window.Size.X.Offset, 0, 34)
+	else
+		content.Visible = true
+		window.Size = UDim2.new(0, 420, 0, 380)
+	end
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+	-- stop any running loop by setting running false (handled below)
+	if screenGui then screenGui:Destroy() end
+end)
+
+-- Teleport logic
+local running = false
+local teleportCoroutine = nil
+
+local function getSelectedParts()
+	local list = {}
+	for _,r in ipairs(partRows.Batu) do
+		if r.IsSelected() and r.Part and r.Part.Parent then
+			table.insert(list, r.Part)
+		end
+	end
+	for _,r in ipairs(partRows.Batang) do
+		if r.IsSelected() and r.Part and r.Part.Parent then
+			table.insert(list, r.Part)
+		end
+	end
+	return list
+end
+
+local function safeTeleportTo(part)
+	local char = player.Character
+	if not char then return false, "Character not found" end
+	local hrp = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
+	if not hrp then return false, "Humanoid root not found" end
+	if not part or not part:IsA("BasePart") then return false, "Target invalid" end
+	-- Compute offset: place player slightly above part
+	local topY = part.Position.Y + (part.Size.Y/2) + 3
+	local targetCFrame = CFrame.new(part.Position.X, topY, part.Position.Z) * CFrame.Angles(0, 0, 0)
+	-- Use pcall to avoid errors if something goes wrong
+	local ok, err = pcall(function()
+		hrp.CFrame = targetCFrame
+	end)
+	if ok then
+		return true, "Teleported"
+	else
+		return false, tostring(err)
+	end
+end
+
+-- Countdown display helper
+local function waitWithCountdown(seconds, statusPrefix)
+	local start = tick()
+	while tick() - start < seconds do
+		local remaining = math.max(0, seconds - (tick() - start))
+		statusLabel.Text = string.format("%s - Next in: %.1f s", statusPrefix, remaining)
+		wait(0.1)
+		-- if running flag false, break early
+		if not running then break end
+	end
+end
+
+startBtn.MouseButton1Click:Connect(function()
+	if running then return end
+	-- parse delay
+	local d = tonumber(delayBox.Text) or 15
+	if d < 0.5 then d = 0.5 end
+	-- clamp recommended range 1-60
+	if d < 1 then d = 1 elseif d > 300 then d = 300 end
+
+	local selected = getSelectedParts()
+	if #selected == 0 then
+		statusLabel.Text = "Status: Tidak ada part terpilih!"
+		return
+	end
+
+	running = true
+	statusLabel.Text = "Status: Mulai teleport..."
+	teleportCoroutine = coroutine.create(function()
+		while running do
+			-- refresh selected list each loop to allow dynamic changes
+			local targets = getSelectedParts()
+			if #targets == 0 then
+				statusLabel.Text = "Status: Tidak ada target terpilih, berhenti."
+				running = false
+				break
+			end
+			for i,part in ipairs(targets) do
+				if not running then break end
+				if part and part.Parent then
+					statusLabel.Text = string.format("Status: Teleport ke '%s' (%d/%d)", part.Name, i, #targets)
+					local ok, msg = safeTeleportTo(part)
+					if not ok then
+						statusLabel.Text = "Error teleport: "..msg
+					end
+					-- wait with countdown; exit early if stopped
+					waitWithCountdown(d, "Status: Teleport berjalan")
+				else
+					-- skip invalid part
+					statusLabel.Text = "Status: Target tidak ditemukan, melewatkan..."
+					wait(0.5)
+				end
+			end
+			-- loop terus; jika ingin berhenti setelah satu putaran, set running=false di sini
+		end
+		statusLabel.Text = "Status: Stopped"
+	end)
+	-- start coroutine
+	coroutine.resume(teleportCoroutine)
+end)
+
+stopBtn.MouseButton1Click:Connect(function()
+	if running then
+		running = false
+		statusLabel.Text = "Status: Menghentikan..."
+	end
+end)
+
+-- Auto-refresh when workspace changes (parts added/removed)
+local bahan = workspace:FindFirstChild("BahanCraft")
+if bahan then
+	bahan.DescendantAdded:Connect(function()
+		-- small debounce
+		wait(0.3)
+		populate()
+	end)
+	bahan.DescendantRemoving:Connect(function()
+		wait(0.3)
+		populate()
+	end)
+end
+
+-- Initial status
+statusLabel.Text = "Status: Idle - Klik item untuk memilih. Right-click title untuk refresh manual."
