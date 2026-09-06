@@ -1,0 +1,878 @@
+-- ===============================================
+-- AUTO TELEPORT SCRIPT - BahanCraft (FIXED v3)
+-- Untuk Arceus Executor
+-- ===============================================
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+
+-- ===============================================
+-- VARIABLES & CONFIG
+-- ===============================================
+
+local Config = {
+    teleportEnabled = false,
+    noclipEnabled = false,
+    autoHoldEEnabled = false,
+    flyEnabled = false,
+    teleportDelay = 5,
+    selectedTargets = {
+        batu = false,
+        batang = false
+    }
+}
+
+local Targets = {
+    batu = {},
+    batang = {}
+}
+
+-- GUI Variables
+local screenGui
+local mainFrame
+local isDragging = false
+local dragStartPos
+local frameStartPos
+
+-- Fly Variables
+local flying = false
+local flySpeed = 50
+local flyConnection
+local bodyVelocity
+local bodyGyro
+
+-- ===============================================
+-- FUNGSI UTILITY
+-- ===============================================
+
+local function findAllTargets()
+    Targets.batu = {}
+    Targets.batang = {}
+    
+    -- Cari seluruh workspace untuk semua part bernama "Batu"
+    local function searchForParts(instance, partName, targetTable)
+        if instance:IsA("BasePart") and instance.Name == partName then
+            table.insert(targetTable, instance)
+        end
+        
+        -- Recursively search children
+        for _, child in pairs(instance:GetChildren()) do
+            searchForParts(child, partName, targetTable)
+        end
+    end
+    
+    -- Search dari root workspace
+    searchForParts(workspace, "Batu", Targets.batu)
+    searchForParts(workspace, "Batang", Targets.batang)
+    
+    print("✓ Batu ditemukan: " .. #Targets.batu)
+    print("✓ Batang ditemukan: " .. #Targets.batang)
+    
+    -- Debug: tampilkan lokasi beberapa
+    if #Targets.batu > 0 then
+        print("  Contoh Batu: " .. Targets.batu[1]:GetFullName())
+    end
+    if #Targets.batang > 0 then
+        print("  Contoh Batang: " .. Targets.batang[1]:GetFullName())
+    end
+end
+
+local function findPartPosition(part)
+    if part and part.Parent then
+        local partPosition = part.Position
+        local partSize = part.Size
+        
+        -- Hitung Y paling bawah dari part
+        local bottomY = partPosition.Y - (partSize.Y / 2)
+        
+        -- Teleport posisi: di atas tanah dengan jarak aman 3 studs
+        local positionAboveGround = Vector3.new(
+            partPosition.X,
+            bottomY + 3,  -- Jarak 3 studs di atas tanah
+            partPosition.Z
+        )
+        
+        return positionAboveGround
+    end
+    return nil
+end
+
+local function teleportCharacterToPosition(targetPosition)
+    if not character or not humanoidRootPart or not humanoidRootPart.Parent then return false end
+    
+    local success = pcall(function()
+        -- Disable collision sementara saat teleport
+        local oldNoclip = Config.noclipEnabled
+        
+        for _, part in pairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                pcall(function()
+                    part.CanCollide = false
+                end)
+            end
+        end
+        
+        -- Teleport langsung
+        humanoidRootPart.CFrame = CFrame.new(targetPosition)
+        
+        wait(0.2)
+        
+        -- Restore collision jika noclip off
+        if not oldNoclip then
+            for _, part in pairs(character:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    pcall(function()
+                        part.CanCollide = true
+                    end)
+                end
+            end
+        end
+    end)
+    
+    return success
+end
+
+local function applyNoclip()
+    if character then
+        for _, part in pairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                pcall(function()
+                    part.CanCollide = false
+                end)
+            end
+        end
+    end
+end
+
+local function removeNoclip()
+    if character then
+        for _, part in pairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                pcall(function()
+                    part.CanCollide = true
+                end)
+            end
+        end
+    end
+end
+
+-- ===============================================
+-- FLY SYSTEM
+-- ===============================================
+
+local function startFly()
+    if not character or not humanoidRootPart then return end
+    
+    flying = true
+    
+    -- Create BodyVelocity for movement
+    bodyVelocity = Instance.new("BodyVelocity")
+    bodyVelocity.Velocity = Vector3.new(0, 0, 0)
+    bodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    bodyVelocity.Parent = humanoidRootPart
+    
+    -- Create BodyGyro for rotation
+    bodyGyro = Instance.new("BodyGyro")
+    bodyGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+    bodyGyro.CFrame = humanoidRootPart.CFrame
+    bodyGyro.Parent = humanoidRootPart
+    
+    -- Disable gravity
+    character.Humanoid.PlatformStand = true
+    
+    -- Main fly loop
+    if flyConnection then
+        flyConnection:Disconnect()
+    end
+    
+    flyConnection = RunService.RenderStepped:Connect(function()
+        if not flying or not character or not humanoidRootPart or not humanoidRootPart.Parent then
+            if flyConnection then
+                flyConnection:Disconnect()
+            end
+            return
+        end
+        
+        local camera = workspace.CurrentCamera
+        local moveDirection = Vector3.new(0, 0, 0)
+        
+        -- Get input
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+            moveDirection = moveDirection + camera.CFrame.LookVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+            moveDirection = moveDirection - camera.CFrame.LookVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+            moveDirection = moveDirection - camera.CFrame.RightVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+            moveDirection = moveDirection + camera.CFrame.RightVector
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+            moveDirection = moveDirection + Vector3.new(0, 1, 0)
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+            moveDirection = moveDirection - Vector3.new(0, 1, 0)
+        end
+        
+        -- Normalize and apply speed
+        if moveDirection.Magnitude > 0 then
+            moveDirection = moveDirection.Unit
+        end
+        
+        bodyVelocity.Velocity = moveDirection * flySpeed
+        bodyGyro.CFrame = camera.CFrame
+    end)
+    
+    print("✓ Fly AKTIF!")
+end
+
+local function stopFly()
+    if flyConnection then
+        flyConnection:Disconnect()
+        flyConnection = nil
+    end
+    
+    flying = false
+    
+    if bodyVelocity then
+        bodyVelocity:Destroy()
+        bodyVelocity = nil
+    end
+    
+    if bodyGyro then
+        bodyGyro:Destroy()
+        bodyGyro = nil
+    end
+    
+    if character and character.Humanoid then
+        character.Humanoid.PlatformStand = false
+    end
+    
+    print("✓ Fly NONAKTIF!")
+end
+
+-- ===============================================
+-- GUI CREATION
+-- ===============================================
+
+local function createGUI()
+    screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "NgaritMacul by. SAPIGANTENG"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = player:WaitForChild("PlayerGui")
+    
+    -- MAIN FRAME
+    mainFrame = Instance.new("Frame")
+    mainFrame.Name = "MainFrame"
+    mainFrame.Size = UDim2.new(0, 350, 0, 520)
+    mainFrame.Position = UDim2.new(0.02, 0, 0.1, 0)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+    mainFrame.BorderSizePixel = 2
+    mainFrame.BorderColor3 = Color3.fromRGB(0, 150, 255)
+    mainFrame.Parent = screenGui
+    
+    -- TITLE BAR
+    local titleBar = Instance.new("Frame")
+    titleBar.Name = "TitleBar"
+    titleBar.Size = UDim2.new(1, 0, 0, 35)
+    titleBar.BackgroundColor3 = Color3.fromRGB(0, 120, 220)
+    titleBar.BorderSizePixel = 0
+    titleBar.Parent = mainFrame
+    
+    local titleText = Instance.new("TextLabel")
+    titleText.Name = "TitleText"
+    titleText.Size = UDim2.new(0.7, 0, 1, 0)
+    titleText.Position = UDim2.new(0.05, 0, 0, 0)
+    titleText.BackgroundTransparency = 1
+    titleText.TextColor3 = Color3.fromRGB(255, 255, 255)
+    titleText.TextSize = 16
+    titleText.Font = Enum.Font.GothamBold
+    titleText.Text = "AUTO TELEPORT"
+    titleText.TextXAlignment = Enum.TextXAlignment.Left
+    titleText.Parent = titleBar
+    
+    -- MINIMIZE BUTTON
+    local minimizeBtn = Instance.new("TextButton")
+    minimizeBtn.Name = "MinimizeBtn"
+    minimizeBtn.Size = UDim2.new(0, 30, 0, 30)
+    minimizeBtn.Position = UDim2.new(0.78, 0, 0.03, 0)
+    minimizeBtn.BackgroundColor3 = Color3.fromRGB(0, 100, 200)
+    minimizeBtn.BorderSizePixel = 0
+    minimizeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    minimizeBtn.TextSize = 18
+    minimizeBtn.Font = Enum.Font.GothamBold
+    minimizeBtn.Text = "_"
+    minimizeBtn.Parent = titleBar
+    
+    -- CLOSE BUTTON
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Name = "CloseBtn"
+    closeBtn.Size = UDim2.new(0, 30, 0, 30)
+    closeBtn.Position = UDim2.new(0.89, 0, 0.03, 0)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 50)
+    closeBtn.BorderSizePixel = 0
+    closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    closeBtn.TextSize = 18
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.Text = "✕"
+    closeBtn.Parent = titleBar
+    
+    -- CONTENT FRAME
+    local contentFrame = Instance.new("Frame")
+    contentFrame.Name = "ContentFrame"
+    contentFrame.Size = UDim2.new(1, 0, 1, -35)
+    contentFrame.Position = UDim2.new(0, 0, 0, 35)
+    contentFrame.BackgroundTransparency = 1
+    contentFrame.Parent = mainFrame
+    
+    -- SCROLL FRAME
+    local scrollFrame = Instance.new("ScrollingFrame")
+    scrollFrame.Name = "ScrollFrame"
+    scrollFrame.Size = UDim2.new(1, -10, 1, -10)
+    scrollFrame.Position = UDim2.new(0, 5, 0, 5)
+    scrollFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+    scrollFrame.BorderSizePixel = 1
+    scrollFrame.BorderColor3 = Color3.fromRGB(60, 60, 65)
+    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 600)
+    scrollFrame.ScrollBarThickness = 8
+    scrollFrame.Parent = contentFrame
+    
+    -- LABEL: TELEPORT SETTINGS
+    local labelTeleport = Instance.new("TextLabel")
+    labelTeleport.Name = "LabelTeleport"
+    labelTeleport.Size = UDim2.new(1, -10, 0, 25)
+    labelTeleport.Position = UDim2.new(0, 5, 0, 5)
+    labelTeleport.BackgroundColor3 = Color3.fromRGB(0, 100, 180)
+    labelTeleport.BorderSizePixel = 0
+    labelTeleport.TextColor3 = Color3.fromRGB(255, 255, 255)
+    labelTeleport.TextSize = 12
+    labelTeleport.Font = Enum.Font.GothamBold
+    labelTeleport.Text = "⚙ TELEPORT SETTINGS"
+    labelTeleport.TextXAlignment = Enum.TextXAlignment.Left
+    labelTeleport.Parent = scrollFrame
+    
+    -- TELEPORT DELAY LABEL
+    local delayLabel = Instance.new("TextLabel")
+    delayLabel.Name = "DelayLabel"
+    delayLabel.Size = UDim2.new(1, -10, 0, 20)
+    delayLabel.Position = UDim2.new(0, 5, 0, 35)
+    delayLabel.BackgroundTransparency = 1
+    delayLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    delayLabel.TextSize = 11
+    delayLabel.Font = Enum.Font.Gotham
+    delayLabel.Text = "Jeda Teleport: " .. Config.teleportDelay .. " detik"
+    delayLabel.TextXAlignment = Enum.TextXAlignment.Left
+    delayLabel.Parent = scrollFrame
+    
+    -- DELAY SLIDER
+    local delaySlider = Instance.new("TextButton")
+    delaySlider.Name = "DelaySlider"
+    delaySlider.Size = UDim2.new(1, -50, 0, 15)
+    delaySlider.Position = UDim2.new(0, 5, 0, 58)
+    delaySlider.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+    delaySlider.BorderSizePixel = 1
+    delaySlider.BorderColor3 = Color3.fromRGB(80, 80, 85)
+    delaySlider.Text = ""
+    delaySlider.Parent = scrollFrame
+    
+    -- DELAY VALUE DISPLAY
+    local delayValue = Instance.new("TextLabel")
+    delayValue.Name = "DelayValue"
+    delayValue.Size = UDim2.new(0, 30, 0, 15)
+    delayValue.Position = UDim2.new(1, -40, 0, 58)
+    delayValue.BackgroundTransparency = 1
+    delayValue.TextColor3 = Color3.fromRGB(0, 200, 255)
+    delayValue.TextSize = 11
+    delayValue.Font = Enum.Font.GothamBold
+    delayValue.Text = Config.teleportDelay
+    delayValue.Parent = scrollFrame
+    
+    -- TARGET SELECTION LABEL
+    local labelTarget = Instance.new("TextLabel")
+    labelTarget.Name = "LabelTarget"
+    labelTarget.Size = UDim2.new(1, -10, 0, 25)
+    labelTarget.Position = UDim2.new(0, 5, 0, 85)
+    labelTarget.BackgroundColor3 = Color3.fromRGB(0, 100, 180)
+    labelTarget.BorderSizePixel = 0
+    labelTarget.TextColor3 = Color3.fromRGB(255, 255, 255)
+    labelTarget.TextSize = 12
+    labelTarget.Font = Enum.Font.GothamBold
+    labelTarget.Text = "📍 TARGET SELECTION"
+    labelTarget.TextXAlignment = Enum.TextXAlignment.Left
+    labelTarget.Parent = scrollFrame
+    
+    -- CHECKBOX BATU
+    local checkBoxBatu = Instance.new("TextButton")
+    checkBoxBatu.Name = "CheckBoxBatu"
+    checkBoxBatu.Size = UDim2.new(0, 20, 0, 20)
+    checkBoxBatu.Position = UDim2.new(0, 10, 0, 120)
+    checkBoxBatu.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+    checkBoxBatu.BorderSizePixel = 1
+    checkBoxBatu.BorderColor3 = Color3.fromRGB(80, 80, 85)
+    checkBoxBatu.TextSize = 0
+    checkBoxBatu.Parent = scrollFrame
+    
+    local batuLabel = Instance.new("TextLabel")
+    batuLabel.Name = "BatuLabel"
+    batuLabel.Size = UDim2.new(0.8, -40, 0, 20)
+    batuLabel.Position = UDim2.new(0, 35, 0, 120)
+    batuLabel.BackgroundTransparency = 1
+    batuLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    batuLabel.TextSize = 11
+    batuLabel.Font = Enum.Font.Gotham
+    batuLabel.Text = "Teleport ke Batu (" .. #Targets.batu .. ")"
+    batuLabel.TextXAlignment = Enum.TextXAlignment.Left
+    batuLabel.Parent = scrollFrame
+    
+    -- CHECKBOX BATANG
+    local checkBoxBatang = Instance.new("TextButton")
+    checkBoxBatang.Name = "CheckBoxBatang"
+    checkBoxBatang.Size = UDim2.new(0, 20, 0, 20)
+    checkBoxBatang.Position = UDim2.new(0, 10, 0, 150)
+    checkBoxBatang.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+    checkBoxBatang.BorderSizePixel = 1
+    checkBoxBatang.BorderColor3 = Color3.fromRGB(80, 80, 85)
+    checkBoxBatang.TextSize = 0
+    checkBoxBatang.Parent = scrollFrame
+    
+    local batangLabel = Instance.new("TextLabel")
+    batangLabel.Name = "BatangLabel"
+    batangLabel.Size = UDim2.new(0.8, -40, 0, 20)
+    batangLabel.Position = UDim2.new(0, 35, 0, 150)
+    batangLabel.BackgroundTransparency = 1
+    batangLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    batangLabel.TextSize = 11
+    batangLabel.Font = Enum.Font.Gotham
+    batangLabel.Text = "Teleport ke Batang (" .. #Targets.batang .. ")"
+    batangLabel.TextXAlignment = Enum.TextXAlignment.Left
+    batangLabel.Parent = scrollFrame
+    
+    -- FEATURES LABEL
+    local labelFeatures = Instance.new("TextLabel")
+    labelFeatures.Name = "LabelFeatures"
+    labelFeatures.Size = UDim2.new(1, -10, 0, 25)
+    labelFeatures.Position = UDim2.new(0, 5, 0, 190)
+    labelFeatures.BackgroundColor3 = Color3.fromRGB(0, 100, 180)
+    labelFeatures.BorderSizePixel = 0
+    labelFeatures.TextColor3 = Color3.fromRGB(255, 255, 255)
+    labelFeatures.TextSize = 12
+    labelFeatures.Font = Enum.Font.GothamBold
+    labelFeatures.Text = "🔧 FITUR TAMBAHAN"
+    labelFeatures.TextXAlignment = Enum.TextXAlignment.Left
+    labelFeatures.Parent = scrollFrame
+    
+    -- TOGGLE AUTO HOLD E
+    local toggleHoldE = Instance.new("TextButton")
+    toggleHoldE.Name = "ToggleHoldE"
+    toggleHoldE.Size = UDim2.new(0, 20, 0, 20)
+    toggleHoldE.Position = UDim2.new(0, 10, 0, 225)
+    toggleHoldE.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+    toggleHoldE.BorderSizePixel = 1
+    toggleHoldE.BorderColor3 = Color3.fromRGB(80, 80, 85)
+    toggleHoldE.TextSize = 0
+    toggleHoldE.Parent = scrollFrame
+    
+    local holdELabel = Instance.new("TextLabel")
+    holdELabel.Name = "HoldELabel"
+    holdELabel.Size = UDim2.new(0.8, -40, 0, 20)
+    holdELabel.Position = UDim2.new(0, 35, 0, 225)
+    holdELabel.BackgroundTransparency = 1
+    holdELabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    holdELabel.TextSize = 11
+    holdELabel.Font = Enum.Font.Gotham
+    holdELabel.Text = "Auto Hold E (0.5s)"
+    holdELabel.TextXAlignment = Enum.TextXAlignment.Left
+    holdELabel.Parent = scrollFrame
+    
+    -- TOGGLE NOCLIP
+    local toggleNoclip = Instance.new("TextButton")
+    toggleNoclip.Name = "ToggleNoclip"
+    toggleNoclip.Size = UDim2.new(0, 20, 0, 20)
+    toggleNoclip.Position = UDim2.new(0, 10, 0, 255)
+    toggleNoclip.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+    toggleNoclip.BorderSizePixel = 1
+    toggleNoclip.BorderColor3 = Color3.fromRGB(80, 80, 85)
+    toggleNoclip.TextSize = 0
+    toggleNoclip.Parent = scrollFrame
+    
+    local noclipLabel = Instance.new("TextLabel")
+    noclipLabel.Name = "NoclipLabel"
+    noclipLabel.Size = UDim2.new(0.8, -40, 0, 20)
+    noclipLabel.Position = UDim2.new(0, 35, 0, 255)
+    noclipLabel.BackgroundTransparency = 1
+    noclipLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    noclipLabel.TextSize = 11
+    noclipLabel.Font = Enum.Font.Gotham
+    noclipLabel.Text = "Noclip Karakter"
+    noclipLabel.TextXAlignment = Enum.TextXAlignment.Left
+    noclipLabel.Parent = scrollFrame
+    
+    -- TOGGLE FLY
+    local toggleFly = Instance.new("TextButton")
+    toggleFly.Name = "ToggleFly"
+    toggleFly.Size = UDim2.new(0, 20, 0, 20)
+    toggleFly.Position = UDim2.new(0, 10, 0, 285)
+    toggleFly.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+    toggleFly.BorderSizePixel = 1
+    toggleFly.BorderColor3 = Color3.fromRGB(80, 80, 85)
+    toggleFly.TextSize = 0
+    toggleFly.Parent = scrollFrame
+    
+    local flyLabel = Instance.new("TextLabel")
+    flyLabel.Name = "FlyLabel"
+    flyLabel.Size = UDim2.new(0.8, -40, 0, 20)
+    flyLabel.Position = UDim2.new(0, 35, 0, 285)
+    flyLabel.BackgroundTransparency = 1
+    flyLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    flyLabel.TextSize = 11
+    flyLabel.Font = Enum.Font.Gotham
+    flyLabel.Text = "Fly Karakter (WASD+Space)"
+    flyLabel.TextXAlignment = Enum.TextXAlignment.Left
+    flyLabel.Parent = scrollFrame
+    
+    -- TELEPORT BUTTON
+    local teleportBtn = Instance.new("TextButton")
+    teleportBtn.Name = "TeleportBtn"
+    teleportBtn.Size = UDim2.new(1, -10, 0, 35)
+    teleportBtn.Position = UDim2.new(0, 5, 0, 325)
+    teleportBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 100)
+    teleportBtn.BorderSizePixel = 1
+    teleportBtn.BorderColor3 = Color3.fromRGB(0, 220, 130)
+    teleportBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    teleportBtn.TextSize = 12
+    teleportBtn.Font = Enum.Font.GothamBold
+    teleportBtn.Text = "▶ MULAI TELEPORT"
+    teleportBtn.Parent = scrollFrame
+    
+    -- STOP BUTTON
+    local stopBtn = Instance.new("TextButton")
+    stopBtn.Name = "StopBtn"
+    stopBtn.Size = UDim2.new(1, -10, 0, 35)
+    stopBtn.Position = UDim2.new(0, 5, 0, 370)
+    stopBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+    stopBtn.BorderSizePixel = 1
+    stopBtn.BorderColor3 = Color3.fromRGB(220, 80, 80)
+    stopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    stopBtn.TextSize = 12
+    stopBtn.Font = Enum.Font.GothamBold
+    stopBtn.Text = "⏹ STOP"
+    stopBtn.Parent = scrollFrame
+    stopBtn.Visible = false
+    
+    -- STATUS LABEL
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Name = "StatusLabel"
+    statusLabel.Size = UDim2.new(1, -10, 0, 70)
+    statusLabel.Position = UDim2.new(0, 5, 0, 415)
+    statusLabel.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    statusLabel.BorderSizePixel = 1
+    statusLabel.BorderColor3 = Color3.fromRGB(70, 70, 75)
+    statusLabel.TextColor3 = Color3.fromRGB(100, 200, 100)
+    statusLabel.TextSize = 10
+    statusLabel.Font = Enum.Font.Gotham
+    statusLabel.Text = "Status: Siap digunakan\nPilih target dan klik Mulai"
+    statusLabel.TextWrapped = true
+    statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    statusLabel.TextYAlignment = Enum.TextYAlignment.Top
+    statusLabel.Parent = scrollFrame
+    
+    -- ===============================================
+    -- EVENT HANDLERS
+    -- ===============================================
+    
+    -- DRAG FUNCTIONALITY
+    titleBar.InputBegan:Connect(function(input, gameProcessed)
+        if gameProcessed then return end
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            isDragging = true
+            dragStartPos = input.Position
+            frameStartPos = mainFrame.Position
+        end
+    end)
+    
+    titleBar.InputEnded:Connect(function(input, gameProcessed)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            isDragging = false
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input, gameProcessed)
+        if isDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - dragStartPos
+            mainFrame.Position = frameStartPos + UDim2.new(0, delta.X, 0, delta.Y)
+        end
+    end)
+    
+    -- CLOSE BUTTON
+    closeBtn.MouseButton1Click:Connect(function()
+        screenGui:Destroy()
+    end)
+    
+    -- MINIMIZE BUTTON
+    local isMinimized = false
+    minimizeBtn.MouseButton1Click:Connect(function()
+        isMinimized = not isMinimized
+        if isMinimized then
+            contentFrame.Visible = false
+            mainFrame.Size = UDim2.new(0, 350, 0, 35)
+            minimizeBtn.Text = "▲"
+        else
+            contentFrame.Visible = true
+            mainFrame.Size = UDim2.new(0, 350, 0, 520)
+            minimizeBtn.Text = "_"
+        end
+    end)
+    
+    -- DELAY SLIDER
+    local isSliderActive = false
+    delaySlider.MouseButton1Down:Connect(function()
+        isSliderActive = true
+    end)
+    
+    delaySlider.MouseButton1Up:Connect(function()
+        isSliderActive = false
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if isSliderActive and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delaySliderAbsPos = delaySlider.AbsolutePosition.X
+            local delaySliderSize = delaySlider.AbsoluteSize.X
+            local mousePos = UserInputService:GetMouseLocation().X
+            local percentage = math.max(0, math.min(1, (mousePos - delaySliderAbsPos) / delaySliderSize))
+            Config.teleportDelay = math.floor(percentage * 19) + 1
+            delayLabel.Text = "Jeda Teleport: " .. Config.teleportDelay .. " detik"
+            delayValue.Text = tostring(Config.teleportDelay)
+        end
+    end)
+    
+    -- CHECKBOX BATU
+    checkBoxBatu.MouseButton1Click:Connect(function()
+        Config.selectedTargets.batu = not Config.selectedTargets.batu
+        if Config.selectedTargets.batu then
+            checkBoxBatu.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+            checkBoxBatu.TextSize = 14
+            checkBoxBatu.Text = "✓"
+        else
+            checkBoxBatu.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+            checkBoxBatu.Text = ""
+        end
+    end)
+    
+    -- CHECKBOX BATANG
+    checkBoxBatang.MouseButton1Click:Connect(function()
+        Config.selectedTargets.batang = not Config.selectedTargets.batang
+        if Config.selectedTargets.batang then
+            checkBoxBatang.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+            checkBoxBatang.TextSize = 14
+            checkBoxBatang.Text = "✓"
+        else
+            checkBoxBatang.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+            checkBoxBatang.Text = ""
+        end
+    end)
+    
+    -- TOGGLE HOLD E
+    toggleHoldE.MouseButton1Click:Connect(function()
+        Config.autoHoldEEnabled = not Config.autoHoldEEnabled
+        if Config.autoHoldEEnabled then
+            toggleHoldE.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+            toggleHoldE.TextSize = 14
+            toggleHoldE.Text = "✓"
+            statusLabel.Text = "Status: Auto Hold E AKTIF"
+            statusLabel.TextColor3 = Color3.fromRGB(100, 200, 100)
+        else
+            toggleHoldE.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+            toggleHoldE.Text = ""
+            statusLabel.Text = "Status: Auto Hold E NONAKTIF"
+            statusLabel.TextColor3 = Color3.fromRGB(200, 150, 100)
+        end
+    end)
+    
+    -- TOGGLE NOCLIP
+    toggleNoclip.MouseButton1Click:Connect(function()
+        Config.noclipEnabled = not Config.noclipEnabled
+        if Config.noclipEnabled then
+            toggleNoclip.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+            toggleNoclip.TextSize = 14
+            toggleNoclip.Text = "✓"
+            applyNoclip()
+            statusLabel.Text = "Status: Noclip AKTIF"
+            statusLabel.TextColor3 = Color3.fromRGB(100, 200, 100)
+        else
+            toggleNoclip.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+            toggleNoclip.Text = ""
+            removeNoclip()
+            statusLabel.Text = "Status: Noclip NONAKTIF"
+            statusLabel.TextColor3 = Color3.fromRGB(200, 150, 100)
+        end
+    end)
+    
+    -- TOGGLE FLY
+    toggleFly.MouseButton1Click:Connect(function()
+        Config.flyEnabled = not Config.flyEnabled
+        if Config.flyEnabled then
+            toggleFly.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+            toggleFly.TextSize = 14
+            toggleFly.Text = "✓"
+            startFly()
+            statusLabel.Text = "Status: FLY AKTIF\nGunakan WASD+Space+Ctrl"
+            statusLabel.TextColor3 = Color3.fromRGB(100, 200, 100)
+        else
+            toggleFly.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+            toggleFly.Text = ""
+            stopFly()
+            statusLabel.Text = "Status: FLY NONAKTIF"
+            statusLabel.TextColor3 = Color3.fromRGB(200, 150, 100)
+        end
+    end)
+    
+    -- TELEPORT BUTTON
+    teleportBtn.MouseButton1Click:Connect(function()
+        if not Config.selectedTargets.batu and not Config.selectedTargets.batang then
+            statusLabel.Text = "Status: PILIH TARGET TERLEBIH DAHULU!"
+            statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+            return
+        end
+        
+        Config.teleportEnabled = true
+        statusLabel.Text = "Status: TELEPORT BERJALAN..."
+        statusLabel.TextColor3 = Color3.fromRGB(100, 200, 255)
+        teleportBtn.Visible = false
+        stopBtn.Visible = true
+    end)
+    
+    -- STOP BUTTON
+    stopBtn.MouseButton1Click:Connect(function()
+        Config.teleportEnabled = false
+        statusLabel.Text = "Status: TELEPORT DIHENTIKAN"
+        statusLabel.TextColor3 = Color3.fromRGB(200, 150, 100)
+        teleportBtn.Visible = true
+        stopBtn.Visible = true
+    end)
+end
+
+-- ===============================================
+-- CHARACTER RESPAWN HANDLER
+-- ===============================================
+
+player.CharacterAdded:Connect(function(newCharacter)
+    character = newCharacter
+    humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+    
+    if Config.flyEnabled then
+        stopFly()
+        wait(0.5)
+        startFly()
+    end
+    
+    if Config.noclipEnabled then
+        wait(0.5)
+        applyNoclip()
+    end
+end)
+
+-- ===============================================
+-- NOCLIP LOOP (TERPISAH - NON-BLOCKING)
+-- ===============================================
+
+spawn(function()
+    while true do
+        if Config.noclipEnabled and character and character.Parent then
+            for _, part in pairs(character:GetDescendants()) do
+                if part:IsA("BasePart") and part.Parent then
+                    pcall(function()
+                        part.CanCollide = false
+                    end)
+                end
+            end
+        end
+        wait(0.1)
+    end
+end)
+
+-- ===============================================
+-- AUTO HOLD E LOOP (SIMPLIFIED - WORKS PROPERLY)
+-- ===============================================
+
+spawn(function()
+    while true do
+        if Config.autoHoldEEnabled and character and character.Parent then
+            wait(0.5) -- Tahan E selama 0.5 detik
+            pcall(function()
+                local UserInputService = UserInputService
+                game:GetService("UserInputService"):SendKeyEvent(true, Enum.KeyCode.E, false, game)
+                wait(0.5)
+                game:GetService("UserInputService"):SendKeyEvent(false, Enum.KeyCode.E, false, game)
+            end)
+        else
+            wait(0.5)
+        end
+    end
+end)
+
+-- ===============================================
+-- MAIN TELEPORT LOOP (TERPISAH - NON-BLOCKING)
+-- ===============================================
+
+spawn(function()
+    while true do
+        if Config.teleportEnabled and character and character.Parent and humanoidRootPart and humanoidRootPart.Parent then
+            local allTargets = {}
+            
+            -- Kumpulkan target yang dipilih
+            if Config.selectedTargets.batu then
+                for _, part in pairs(Targets.batu) do
+                    if part and part.Parent then
+                        table.insert(allTargets, part)
+                    end
+                end
+            end
+            
+            if Config.selectedTargets.batang then
+                for _, part in pairs(Targets.batang) do
+                    if part and part.Parent then
+                        table.insert(allTargets, part)
+                    end
+                end
+            end
+            
+            if #allTargets > 0 then
+                for _, targetPart in pairs(allTargets) do
+                    if Config.teleportEnabled and targetPart and targetPart.Parent and humanoidRootPart and humanoidRootPart.Parent then
+                        local targetPos = findPartPosition(targetPart)
+                        if targetPos then
+                            teleportCharacterToPosition(targetPos)
+                            wait(Config.teleportDelay)
+                        end
+                    end
+                end
+            else
+                wait(1)
+            end
+        else
+            wait(1)
+        end
+    end
+end)
+
+-- ===============================================
+-- INITIALIZE SCRIPT
+-- ===============================================
+
+wait(1) -- Tunggu game load sepenuhnya
+findAllTargets()
+createGUI()
+
+print("✓✓✓ AUTO TELEPORT SCRIPT LOADED SUKSES! ✓✓✓")
+print("✓ Batu ditemukan: " .. #Targets.batu)
+print("✓ Batang ditemukan: " .. #Targets.batang)
+print("✓ GUI siap digunakan!")
+print("✓ Auto Hold E ready!")
+print("✓ Fly ready! (Toggle + WASD+Space+Ctrl)")
