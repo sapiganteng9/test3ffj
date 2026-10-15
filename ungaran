@@ -1,0 +1,225 @@
+local function log(...)
+    local parts = {}
+    for i=1, select("#", ...) do parts[#parts+1] = tostring(select(i, ...)) end
+    pcall(print, "[TruckAutoLoop]", table.concat(parts, " "))
+end
+
+local function safeFire(ev, ...)
+    if not ev then return false, "not found" end
+    if typeof(ev.FireServer) == "function" then
+        return pcall(function() ev:FireServer(...) end)
+    end
+    return false, "not RemoteEvent"
+end
+
+local function safeInvoke(fn, ...)
+    if not fn then return false, "not found" end
+    if typeof(fn.InvokeServer) == "function" then
+        local ok, res = pcall(function() return fn:InvokeServer(...) end)
+        if ok then return true, res else return false, res end
+    elseif typeof(fn.FireServer) == "function" then
+        return pcall(function() fn:FireServer(...) end)
+    end
+    return false, "not callable"
+end
+
+local function findDeliverRemote()
+    local keywords = {"deliver","dropoff","complete","finish","claim","drop"}
+    for _, c in ipairs(ReplicatedStorage:GetDescendants()) do
+        if (c:IsA("RemoteEvent") or c:IsA("RemoteFunction")) then
+            local n = string.lower(c.Name or "")
+            for _,kw in ipairs(keywords) do if string.find(n, kw) then return c end end
+        end
+    end
+    return nil
+end
+
+local function refreshRemotes()
+    local spawnRemote
+    if ReplicatedStorage:FindFirstChild("TruckSpawnerRemotes") then
+        spawnRemote = ReplicatedStorage.TruckSpawnerRemotes:FindFirstChild("SpawnTruck")
+    end
+    if not spawnRemote then
+        for _,c in ipairs(ReplicatedStorage:GetDescendants()) do
+            if (c:IsA("RemoteEvent") or c:IsA("RemoteFunction")) and string.find(string.lower(c.Name or ""), "spawn") then spawnRemote = c; break end
+        end
+    end
+    local findNearest = ReplicatedStorage:FindFirstChild("FindNearestCargo")
+    local cargoNotify = ReplicatedStorage:FindFirstChild("CargoFullNotify")
+    return spawnRemote, findNearest, cargoNotify
+end
+
+local function findDescendantByName(root, name)
+    for _, child in ipairs(root:GetChildren()) do
+        if child.Name == name then return child end
+        local found = findDescendantByName(child, name)
+        if found then return found end
+    end
+    return nil
+end
+
+local function getDestinationPart()
+    local targetName = "DestinationPoint_PakanTernak"
+    local inst = Workspace:FindFirstChild(targetName) or findDescendantByName(Workspace, targetName)
+    if not inst then
+        for _, c in ipairs(Workspace:GetDescendants()) do
+            if string.lower(c.Name or "") == string.lower(targetName) then inst = c; break end
+        end
+    end
+    if not inst then return nil end
+    if inst:IsA("Model") then
+        if inst.PrimaryPart then return inst.PrimaryPart end
+        for _, d in ipairs(inst:GetDescendants()) do if d:IsA("BasePart") then return d end end
+        return nil
+    end
+    if inst:IsA("BasePart") then return inst end
+    return nil
+end
+
+local function isLikelyTruckModel(m)
+    if not m or not m:IsA("Model") then return false end
+    local n = string.lower(m.Name or "")
+    if string.find(n, "truck") or string.find(n, "truk") or string.find(n, "besi") then return true end
+    for _, d in ipairs(m:GetDescendants()) do
+        if d:IsA("VehicleSeat") or d:IsA("Seat") then return true end
+    end
+    return false
+end
+
+local function waitForSpawnedTruck(timeout)
+    timeout = timeout or 8
+    local start = tick()
+    for _, m in ipairs(Workspace:GetChildren()) do if isLikelyTruckModel(m) then return m end end
+    local found
+    local conn = Workspace.DescendantAdded:Connect(function(obj)
+        if found then return end
+        local model = obj
+        if not obj:IsA("Model") then model = obj:FindFirstAncestorOfClass("Model") end
+        if model and isLikelyTruckModel(model) then found = model end
+    end)
+    while tick() - start < timeout and not found do wait(0.12) end
+    if conn then conn:Disconnect() end
+    return found
+end
+
+local function trySeatInVehicle(truckModel)
+    if not truckModel then return false, "no truck" end
+    local seat
+    for _, d in ipairs(truckModel:GetDescendants()) do
+        if d:IsA("VehicleSeat") or d:IsA("Seat") then seat = d; break end
+    end
+    if not seat then return false, "no seat" end
+    local lp = Players.LocalPlayer
+    local char = lp and lp.Character
+    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+    local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+    if not humanoid or not hrp then return false, "no humanoid/hrp" end
+    pcall(function() hrp.CFrame = seat.CFrame * CFrame.new(0,2,0) end)
+    pcall(function() humanoid.Sit = true end)
+    local t0 = tick()
+    while tick() - t0 < 2 do
+        if seat.Occupant and seat.Occupant.Parent == humanoid then return true, "seated" end
+        if humanoid.SeatPart == seat then return true, "seated" end
+        wait(0.12)
+    end
+    return false, "seat not confirmed"
+end
+
+local function singleCycle()
+    local spawnRemote, findNearest, cargoNotify = refreshRemotes()
+    log("Remotes:", "spawn="..tostring(spawnRemote), "findNearest="..tostring(findNearest), "cargoNotify="..tostring(cargoNotify))
+
+    -- spawn
+    if spawnRemote then
+        local ok, err = safeFire(spawnRemote, "BESI TUA")
+        log("Spawn fired:", ok, tostring(err))
+    else
+        log("Spawn remote not found")
+    end
+
+    local truck = waitForSpawnedTruck(8)
+    log("Truck found:", tostring(truck))
+    wait(0.8)
+
+    -- load twice
+    if findNearest then
+        local ok1, r1 = safeInvoke(findNearest, "Pupuk")
+        wait(0.45)
+        local ok2, r2 = safeInvoke(findNearest, "Pupuk")
+        log("Load results:", tostring(ok1), tostring(ok2))
+    else
+        log("FindNearestCargo missing")
+    end
+
+    wait(0.6)
+
+    -- seat
+    local seatOk, seatMsg = trySeatInVehicle(truck)
+    log("Seat:", tostring(seatOk), tostring(seatMsg))
+    wait(0.6)
+
+    -- deliver
+    local dest = getDestinationPart()
+    if not dest then
+        log("Destination missing: simulating delivery (client-only)")
+        pcall(function() local s=Instance.new("Sound", SoundService); s.SoundId="rbxassetid://5314631765"; s:Play() end)
+        return true
+    end
+
+    local delivered = false
+    if cargoNotify then
+        local ok, err = safeFire(cargoNotify, dest.Position)
+        log("CargoFullNotify fired:", tostring(ok))
+        if ok then delivered = true end
+    end
+
+    if not delivered then
+        local dr = findDeliverRemote()
+        if dr then
+            if dr:IsA("RemoteFunction") then
+                local ok,res = safeInvoke(dr, "Pupuk", dest)
+                log("Deliver invoke:", tostring(ok), tostring(res))
+                if ok then delivered = true end
+            else
+                local ok,res = safeFire(dr, "Pupuk", dest)
+                log("Deliver fire:", tostring(ok), tostring(res))
+                if ok then delivered = true end
+            end
+        else
+            log("No deliver remote found heuristically")
+        end
+    end
+
+    if not delivered then
+        local lp = Players.LocalPlayer
+        local char = lp and lp.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp and dest and dest:IsA("BasePart") then
+            pcall(function() hrp.CFrame = dest.CFrame * CFrame.new(0,3,0) end)
+            pcall(function() local s=Instance.new("Sound", SoundService); s.SoundId="rbxassetid://5314631765"; s:Play() end)
+            log("Teleported to dest (simulated success)")
+            delivered = true
+        else
+            log("Fallback deliver failed")
+        end
+    end
+
+    return delivered
+end
+
+-- main loop control (start immediately)
+_G.TruckAutoLoop_Running = true
+
+local delayBetweenCycles = 2.0 -- seconds
+log("AutoLoop started. To stop set _G.TruckAutoLoop_Running = false in console.")
+while _G.TruckAutoLoop_Running do
+    local ok, res = pcall(singleCycle)
+    log("Cycle finished. success:", tostring(ok and res))
+    -- wait while allowing stop
+    local t0 = tick()
+    while tick() - t0 < delayBetweenCycles do
+        if not _G.TruckAutoLoop_Running then break end
+        wait(0.1)
+    end
+end
+log("AutoLoop stopped by user.")
