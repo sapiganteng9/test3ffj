@@ -1,0 +1,191 @@
+-- Executor-friendly GUI parenter (jalankan lewat executor)
+-- Mencoba beberapa cara agar ScreenGui terlihat: PlayerGui, CoreGui, gethui, get_hidden_gui; pakai syn.protect_gui bila tersedia.
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local CoreGuiService = game:GetService("CoreGui")
+local ok, err
+
+local function safePrint(...)
+    local s = ""
+    for i=1, select("#", ...) do
+        s = s .. tostring(select(i, ...))
+        if i < select("#", ...) then s = s .. " " end
+    end
+    pcall(print, s)
+end
+
+safePrint("[ParentTest] Start")
+
+-- create screen GUI (unparented)
+local screen = Instance.new("ScreenGui")
+screen.Name = "AutoLoopTestGui_Parenter"
+screen.ResetOnSpawn = false
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 420, 0, 140)
+frame.Position = UDim2.new(0.5, -210, 0.5, -70)
+frame.BackgroundColor3 = Color3.fromRGB(30,30,30)
+frame.BorderSizePixel = 0
+frame.Parent = screen
+
+local lbl = Instance.new("TextLabel")
+lbl.Size = UDim2.new(1, -24, 1, -24)
+lbl.Position = UDim2.new(0, 12, 0, 12)
+lbl.BackgroundTransparency = 1
+lbl.TextColor3 = Color3.new(1,1,1)
+lbl.Font = Enum.Font.Code
+lbl.TextSize = 14
+lbl.TextWrapped = true
+lbl.Text = "Parent test running...\n(see console / this label updates)"
+lbl.Parent = frame
+
+local function updateLabel(msg)
+    pcall(function()
+        lbl.Text = lbl.Text .. "\n" .. tostring(msg)
+    end)
+    safePrint("[ParentTest]", msg)
+end
+
+-- attempt 1: Players.LocalPlayer.PlayerGui
+local function try_playergui()
+    local lp = Players.LocalPlayer
+    if lp then
+        local pg = lp:FindFirstChild("PlayerGui") or (lp:WaitForChild and lp:WaitForChild("PlayerGui", 0.1))
+        if pg then
+            pcall(function() screen.Parent = pg end)
+            if screen.Parent == pg then
+                updateLabel("Parented to PlayerGui ("..pg:GetFullName()..")")
+                return true
+            else
+                updateLabel("Tried PlayerGui but parenting failed.")
+            end
+        else
+            updateLabel("Players.LocalPlayer exists but PlayerGui not found.")
+        end
+    else
+        updateLabel("Players.LocalPlayer is nil.")
+    end
+    return false
+end
+
+-- attempt 2: game CoreGui (pcall)
+local function try_coregui()
+    local ok, cg = pcall(function() return game:GetService("CoreGui") end)
+    if ok and cg then
+        pcall(function() screen.Parent = cg end)
+        if screen.Parent == cg then
+            updateLabel("Parented to CoreGui ("..cg:GetFullName()..")")
+            return true
+        else
+            updateLabel("Tried CoreGui but parenting failed or blocked.")
+        end
+    else
+        updateLabel("CoreGui not accessible or nil.")
+    end
+    return false
+end
+
+-- attempt 3: gethui / get_hidden_gui (exploit apis)
+local function try_gethui()
+    -- try gethui
+    local g = nil
+    if type(gethui) == "function" then
+        pcall(function() g = gethui() end)
+        if g then
+            pcall(function() screen.Parent = g end)
+            if screen.Parent == g then
+                updateLabel("Parented to gethui()")
+                return true
+            else
+                updateLabel("gethui() returned object but parenting failed.")
+            end
+        else
+            updateLabel("gethui() exists but returned nil.")
+        end
+    end
+    -- try get_hidden_gui
+    if type(get_hidden_gui) == "function" then
+        pcall(function() g = get_hidden_gui() end)
+        if g then
+            pcall(function() screen.Parent = g end)
+            if screen.Parent == g then
+                updateLabel("Parented to get_hidden_gui()")
+                return true
+            else
+                updateLabel("get_hidden_gui() returned object but parenting failed.")
+            end
+        else
+            updateLabel("get_hidden_gui() exists but returned nil.")
+        end
+    end
+    return false
+end
+
+-- attempt 4: syn.protect_gui (protect and parent to CoreGui)
+local function try_syn_protect()
+    if type(syn) == "table" and type(syn.protect_gui) == "function" then
+        pcall(function() syn.protect_gui(screen) end)
+        local ok, cg = pcall(function() return game:GetService("CoreGui") end)
+        if ok and cg then
+            pcall(function() screen.Parent = cg end)
+            if screen.Parent == cg then
+                updateLabel("Protected GUI with syn.protect_gui and parented to CoreGui")
+                return true
+            else
+                updateLabel("Protected but parenting to CoreGui failed.")
+            end
+        end
+    end
+    return false
+end
+
+-- attempt 5: fallback - wait for PlayerGui (small loop)
+local function wait_for_playergui(timeout)
+    timeout = timeout or 5
+    local t0 = tick()
+    while tick() - t0 < timeout do
+        if Players.LocalPlayer then
+            local pg = Players.LocalPlayer:FindFirstChild("PlayerGui")
+            if pg then
+                pcall(function() screen.Parent = pg end)
+                if screen.Parent == pg then
+                    updateLabel("Later parented to PlayerGui ("..pg:GetFullName()..")")
+                    return true
+                end
+            end
+        end
+        wait(0.2)
+    end
+    return false
+end
+
+-- run attempts in order
+local success = false
+success = try_playergui() or success
+if not success then success = try_coregui() or success end
+if not success then success = try_gethui() or success end
+if not success then success = try_syn_protect() or success end
+if not success then success = wait_for_playergui(6) or success end
+
+if not success then
+    updateLabel("All parenting attempts failed. Trying to parent to CoreGui regardless (may be blocked).")
+    pcall(function() screen.Parent = game:GetService("CoreGui") end)
+    if screen.Parent then
+        updateLabel("Parented to CoreGui on final attempt: "..tostring(screen.Parent:GetFullName()))
+        success = true
+    else
+        updateLabel("Final attempt failed. screen.Parent is nil; GUI will not be visible.")
+    end
+end
+
+-- finalize: try protect with syn if available to ensure visibility
+if success and type(syn) == "table" and type(syn.protect_gui) == "function" then
+    pcall(function() syn.protect_gui(screen) end)
+    updateLabel("syn.protect_gui applied (if available).")
+end
+
+if success then
+    updateLabel("DONE — GUI should be visible now. If not, paste console/debug output here.")
+else
+    updateLabel("FAILED — GUI not visible. Paste all debug lines to chat.")
+end
