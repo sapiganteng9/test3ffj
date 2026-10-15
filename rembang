@@ -1,0 +1,120 @@
+-- Diagnostic runner: jalankan lewat executor. Menangkap stack trace lengkap dan menampilkannya di layar.
+local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
+
+local function safePrint(...)
+    local s = ""
+    for i = 1, select("#", ...) do
+        s = s .. tostring(select(i, ...))
+        if i < select("#", ...) then s = s .. " " end
+    end
+    pcall(print, "[AutoDiag]", s)
+end
+
+local function showTraceOnScreen(txt)
+    -- Buat/replace simple ScreenGui di CoreGui agar selalu terlihat di executor
+    pcall(function()
+        if CoreGui:FindFirstChild("AutoDiagTrace") then CoreGui.AutoDiagTrace:Destroy() end
+        local screen = Instance.new("ScreenGui")
+        screen.Name = "AutoDiagTrace"
+        screen.ResetOnSpawn = false
+        screen.Parent = CoreGui
+
+        local frame = Instance.new("Frame")
+        frame.Parent = screen
+        frame.Size = UDim2.new(0, 800, 0, 420)
+        frame.Position = UDim2.new(0, 10, 0, 10)
+        frame.BackgroundColor3 = Color3.fromRGB(20,20,20)
+        frame.BorderSizePixel = 0
+
+        local corner = Instance.new("UICorner", frame)
+        corner.CornerRadius = UDim.new(0, 8)
+
+        local label = Instance.new("TextLabel")
+        label.Parent = frame
+        label.Size = UDim2.new(1, -12, 1, -12)
+        label.Position = UDim2.new(0, 6, 0, 6)
+        label.BackgroundTransparency = 1
+        label.TextColor3 = Color3.new(1,1,1)
+        label.Font = Enum.Font.Code
+        label.TextSize = 13
+        label.TextWrapped = true
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.TextYAlignment = Enum.TextYAlignment.Top
+        label.RichText = false
+        label.Text = tostring(txt)
+    end)
+end
+
+-- The code we want to test (kept minimal and instrumented)
+local function testMain()
+    safePrint("Starting diagnostic testMain")
+
+    -- Try to determine UI parent
+    local parent = nil
+    if Players and Players.LocalPlayer and Players.LocalPlayer:FindFirstChild("PlayerGui") then
+        parent = Players.LocalPlayer.PlayerGui
+        safePrint("Parent candidate: PlayerGui ->", parent:GetFullName())
+    else
+        safePrint("PlayerGui not available, will attempt CoreGui")
+        parent = CoreGui
+        if parent then safePrint("Parent candidate: CoreGui ->", parent:GetFullName()) end
+    end
+
+    -- Minimal GUI create - avoid any advanced calls
+    safePrint("Creating ScreenGui (unparented)")
+    local screen = Instance.new("ScreenGui")
+    screen.Name = "AutoDiagTestGui"
+    screen.ResetOnSpawn = false
+
+    safePrint("Creating Frame")
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0, 420, 0, 140)
+    frame.Position = UDim2.new(0.5, -210, 0.5, -70)
+    frame.BackgroundColor3 = Color3.fromRGB(30,30,30)
+    frame.BorderSizePixel = 0
+    frame.Parent = screen
+
+    safePrint("Creating TextLabel")
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -24, 1, -24)
+    lbl.Position = UDim2.new(0, 12, 0, 12)
+    lbl.BackgroundTransparency = 1
+    lbl.TextColor3 = Color3.new(1,1,1)
+    lbl.Font = Enum.Font.Code
+    lbl.TextSize = 14
+    lbl.TextWrapped = true
+    lbl.Text = "AutoDiag: GUI alive\n(press button to test, or read console)"
+    lbl.Parent = frame
+
+    safePrint("Attempting to parent ScreenGui to chosen parent with pcall")
+    local ok, perr = pcall(function() screen.Parent = parent end)
+    safePrint("Parent attempt result:", ok, perr or "no error")
+    if not ok then error("Parenting ScreenGui failed: "..tostring(perr)) end
+
+    safePrint("ScreenGui.Parent is now:", tostring(screen.Parent))
+
+    -- Add a test button to ensure interactivity works
+    safePrint("Creating test button")
+    local btn = Instance.new("TextButton")
+    btn.Parent = frame
+    btn.Size = UDim2.new(0, 120, 0, 32)
+    btn.Position = UDim2.new(1, -132, 1, -44)
+    btn.Text = "Print Test"
+    btn.MouseButton1Click:Connect(function()
+        safePrint("Test button clicked")
+        lbl.Text = lbl.Text .. "\nButton clicked at " .. tostring(os.time())
+    end)
+
+    safePrint("GUI created successfully; visible depends on parent and executor.")
+end
+
+-- run with xpcall to capture full traceback
+local ok, err = xpcall(testMain, function(e) return debug.traceback(e, 2) end)
+if not ok then
+    safePrint("DIAGNOSTIC ERROR:", err)
+    showTraceOnScreen(err)
+else
+    safePrint("DIAGNOSTIC OK - no error thrown")
+end
