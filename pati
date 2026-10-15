@@ -1,0 +1,388 @@
+-- Executor-friendly diagnostic + AutoLoop (safe)
+-- Jalankan lewat executor (Arceus). Script ini mencoba aman dipakai di lingkungan executor.
+-- Setelah jalan, lihat DebugPanel di layar / konsol untuk pesan diagnostik.
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local SoundService = game:GetService("SoundService")
+local CoreGui = game:GetService("CoreGui")
+
+-- Simple logger that both prints and writes to on-screen debug panel
+local function log(...)
+    local s = ""
+    for i=1,select("#", ...) do
+        s = s .. tostring(select(i, ...))
+        if i < select("#", ...) then s = s .. "\t" end
+    end
+    pcall(function() print("[AutoLoop]", s) end)
+    -- append to debug label
+    if _G.__AutoLoopDebugLabel and _G.__AutoLoopDebugLabel.Parent then
+        local lbl = _G.__AutoLoopDebugLabel
+        lbl.Text = (lbl.Text == "" and "" or lbl.Text .. "\n") .. s
+        -- keep it short
+        local lines = {}
+        for line in string.gmatch(lbl.Text, "[^\n]+") do table.insert(lines, line) end
+        if #lines > 20 then
+            local newtxt = table.concat({unpack(lines, #lines-19, #lines)}, "\n")
+            lbl.Text = newtxt
+        end
+    end
+end
+
+-- Create a small debug panel in CoreGui (executor usually allows)
+local function ensureDebugPanel()
+    if _G.__AutoLoopDebugLabel and _G.__AutoLoopDebugLabel.Parent then return _G.__AutoLoopDebugLabel end
+    local screenParent = CoreGui
+    local screen = Instance.new("ScreenGui")
+    screen.Name = "AutoLoopDebugGui"
+    screen.ResetOnSpawn = false
+    screen.Parent = screenParent
+
+    local frame = Instance.new("Frame")
+    frame.Parent = screen
+    frame.Size = UDim2.new(0, 520, 0, 200)
+    frame.Position = UDim2.new(0, 10, 0, 10)
+    frame.BackgroundColor3 = Color3.fromRGB(20,20,20)
+    frame.BorderSizePixel = 0
+    frame.Active = true
+    frame.Draggable = true
+
+    local corner = Instance.new("UICorner", frame)
+    corner.CornerRadius = UDim.new(0,8)
+
+    local label = Instance.new("TextLabel", frame)
+    label.Name = "DebugLabel"
+    label.Size = UDim2.new(1, -12, 1, -12)
+    label.Position = UDim2.new(0,6,0,6)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = Color3.new(1,1,1)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextYAlignment = Enum.TextYAlignment.Top
+    label.Font = Enum.Font.Code
+    label.TextSize = 13
+    label.Text = ""
+    label.TextWrapped = true
+    label.RichText = false
+
+    _G.__AutoLoopDebugLabel = label
+    return label
+end
+
+local dbg = ensureDebugPanel()
+log("ENV DIAGNOSTIC:")
+local ok, lp = pcall(function() return Players.LocalPlayer end)
+log(" Players.LocalPlayer available:", ok and tostring(lp) or "nil")
+local fallbackPlayer = nil
+local pl
+if Players.LocalPlayer then
+    pl = Players.LocalPlayer
+else
+    local ok2, first = pcall(function() return Players:GetPlayers()[1] end)
+    if ok2 and first then
+        pl = first
+        log(" Using Players:GetPlayers()[1] as fallback:", pl.Name)
+    else
+        log(" No player found. Script will still try to create UI in CoreGui.")
+    end
+end
+
+-- Helper to get PlayerGui or fallback to CoreGui
+local function getUiParent()
+    if pl and pl:FindFirstChild("PlayerGui") then
+        return pl.PlayerGui
+    end
+    return CoreGui
+end
+
+local uiParent = getUiParent()
+log(" UI parent:", uiParent and uiParent:GetFullName() or "nil")
+
+-- Small safe helper to create instances (pcall-protected)
+local function safeNew(class, props)
+    local ok, inst = pcall(function() return Instance.new(class) end)
+    if not ok or not inst then
+        log("ERROR: cannot create instance of", class)
+        return nil
+    end
+    if props then
+        for k,v in pairs(props) do
+            pcall(function()
+                if k == "Parent" then inst.Parent = v else inst[k] = v end
+            end)
+        end
+    end
+    return inst
+end
+
+-- Build minimal GUI: Start / Stop / Status / Close, draggable
+local function buildGui()
+    local parent = getUiParent() or CoreGui
+    -- remove older
+    pcall(function() if parent:FindFirstChild("AutoLoopGui") then parent.AutoLoopGui:Destroy() end end)
+    local screen = safeNew("ScreenGui", {Parent = parent, Name = "AutoLoopGui", ResetOnSpawn = false})
+    local frame = safeNew("Frame", {Parent = screen, Size = UDim2.new(0, 380, 0, 160), Position = UDim2.new(0, 20, 0, 220), BackgroundColor3 = Color3.fromRGB(24,24,24), BorderSizePixel = 0})
+    safeNew("UICorner", {Parent = frame, CornerRadius = UDim.new(0,8)})
+    local title = safeNew("TextLabel", {Parent = frame, Text = "AutoLoop (Executor)", Size = UDim2.new(1, -100, 0, 32), Position = UDim2.new(0, 12, 0, 6), BackgroundTransparency = 1, TextColor3 = Color3.new(1,1,1), Font = Enum.Font.GothamBold, TextSize = 16, TextXAlignment = Enum.TextXAlignment.Left})
+    local btnClose = safeNew("TextButton", {Parent = frame, Text = "✕", Size = UDim2.new(0,28,0,28), Position = UDim2.new(1, -40, 0, 6), BackgroundColor3 = Color3.fromRGB(190,60,60), TextColor3 = Color3.new(1,1,1)})
+    safeNew("UICorner", {Parent = btnClose, CornerRadius = UDim.new(0,6)})
+    local status = safeNew("TextLabel", {Parent = frame, Text = "Status: idle", Size = UDim2.new(1, -24, 0, 28), Position = UDim2.new(0, 12, 0, 50), BackgroundTransparency = 1, TextColor3 = Color3.new(1,1,1), Font = Enum.Font.Gotham, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left})
+    local startBtn = safeNew("TextButton", {Parent = frame, Text = "Start", Size = UDim2.new(0, 88, 0, 32), Position = UDim2.new(0, 12, 1, -44), BackgroundColor3 = Color3.fromRGB(80,160,90), TextColor3 = Color3.new(1,1,1)})
+    local stopBtn = safeNew("TextButton", {Parent = frame, Text = "Stop", Size = UDim2.new(0, 88, 0, 32), Position = UDim2.new(0, 116, 1, -44), BackgroundColor3 = Color3.fromRGB(200,80,80), TextColor3 = Color3.new(1,1,1)})
+    local runOnceBtn = safeNew("TextButton", {Parent = frame, Text = "Run Once", Size = UDim2.new(0, 88, 0, 32), Position = UDim2.new(0, 220, 1, -44), BackgroundColor3 = Color3.fromRGB(80,120,200), TextColor3 = Color3.new(1,1,1)})
+    safeNew("UICorner", {Parent = startBtn, CornerRadius = UDim.new(0,6)})
+    safeNew("UICorner", {Parent = stopBtn, CornerRadius = UDim.new(0,6)})
+    safeNew("UICorner", {Parent = runOnceBtn, CornerRadius = UDim.new(0,6)})
+
+    -- debug label reference
+    _G.__AutoLoopStatusLabel = status
+
+    -- make draggable (basic)
+    local dragging = false
+    local dragStart, startPos
+    frame.InputBegan:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = inp.Position
+            startPos = frame.Position
+            inp.Changed:Connect(function()
+                if inp.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    frame.InputChanged:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseMovement then dragInput = inp end
+    end)
+    UserInputService.InputChanged:Connect(function(inp)
+        if dragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = inp.Position - dragStart
+            pcall(function() frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y) end)
+        end
+    end)
+
+    return {
+        Screen = screen,
+        Frame = frame,
+        Status = status,
+        Start = startBtn,
+        Stop = stopBtn,
+        RunOnce = runOnceBtn,
+        Close = btnClose
+    }
+end
+
+local gui = buildGui()
+
+-- Minimal implementations of actions (spawn -> load -> seat -> deliver)
+local function safeRefreshRemotes()
+    local spawnRemote = nil
+    pcall(function()
+        if ReplicatedStorage:FindFirstChild("TruckSpawnerRemotes") then
+            spawnRemote = ReplicatedStorage.TruckSpawnerRemotes:FindFirstChild("SpawnTruck")
+        end
+        if not spawnRemote then
+            for _, c in ipairs(ReplicatedStorage:GetDescendants()) do
+                if (c:IsA("RemoteEvent") or c:IsA("RemoteFunction")) and string.find(string.lower(c.Name), "spawn") then spawnRemote = c break end
+            end
+        end
+    end)
+    local findNearest = ReplicatedStorage:FindFirstChild("FindNearestCargo")
+    local cargoNotify = ReplicatedStorage:FindFirstChild("CargoFullNotify")
+    local notifyClient = ReplicatedStorage:FindFirstChild("NotifyClient")
+    return spawnRemote, findNearest, cargoNotify, notifyClient
+end
+
+local function tryFire(ev, ...)
+    if not ev then return false, "not found" end
+    if typeof(ev.FireServer) == "function" then
+        return pcall(function() ev:FireServer(...) end)
+    end
+    return false, "not a RemoteEvent"
+end
+
+local function tryInvoke(fn, ...)
+    if not fn then return false, "not found" end
+    if typeof(fn.InvokeServer) == "function" then
+        return pcall(function() return fn:InvokeServer(...) end)
+    elseif typeof(fn.FireServer) == "function" then
+        return pcall(function() fn:FireServer(...) end)
+    end
+    return false, "not callable"
+end
+
+local function findDestination()
+    local name = "DestinationPoint_PakanTernak"
+    local found = Workspace:FindFirstChild(name) or nil
+    if not found then
+        for _, d in ipairs(Workspace:GetDescendants()) do
+            if string.lower(d.Name) == string.lower(name) then found = d; break end
+        end
+    end
+    if found and found:IsA("Model") then
+        if found.PrimaryPart then return found.PrimaryPart end
+        for _,c in ipairs(found:GetDescendants()) do if c:IsA("BasePart") then return c end end
+        return nil
+    end
+    if found and found:IsA("BasePart") then return found end
+    return nil
+end
+
+local function simpleWaitForTruck(timeout)
+    timeout = timeout or 8
+    local start = tick()
+    while tick()-start < timeout do
+        for _, m in ipairs(Workspace:GetChildren()) do
+            if m:IsA("Model") and (string.find(string.lower(m.Name or ""), "truck") or m:FindFirstChildOfClass("VehicleSeat")) then
+                return m
+            end
+        end
+        wait(0.25)
+    end
+    return nil
+end
+
+local function attemptSeat(truckModel)
+    if not pl or not pl.Character then return false, "no char" end
+    local humanoid = pl.Character:FindFirstChildOfClass("Humanoid")
+    local hrp = pl.Character:FindFirstChild("HumanoidRootPart")
+    if not humanoid or not hrp then return false, "no humanoid/hrp" end
+    local seat = nil
+    if truckModel then
+        for _,d in ipairs(truckModel:GetDescendants()) do
+            if d:IsA("VehicleSeat") or d:IsA("Seat") then seat = d; break end
+        end
+    end
+    if not seat then return false, "no seat found" end
+    pcall(function() hrp.CFrame = seat.CFrame * CFrame.new(0,2,0) end)
+    pcall(function() humanoid.Sit = true end)
+    local t0 = tick()
+    while tick()-t0 < 2 do
+        if seat.Occupant and seat.Occupant.Parent == humanoid then return true, "seated" end
+        if humanoid.SeatPart == seat then return true, "seated" end
+        wait(0.1)
+    end
+    return false, "seat check timeout"
+end
+
+-- single automated sequence (safe)
+local function singleSequence()
+    local spawnRemote, findNearest, cargoNotify, notifyClient = safeRefreshRemotes()
+    log("Remotes:", tostring(spawnRemote), tostring(findNearest), tostring(cargoNotify))
+    -- spawn truck
+    if spawnRemote then
+        local ok, err = tryFire(spawnRemote, "BESI TUA")
+        log("Spawn request fired:", ok, err)
+    else
+        log("Spawn remote not found; skipping spawn.")
+    end
+    local truck = simpleWaitForTruck(8)
+    log("Truck found:", tostring(truck))
+    wait(0.8)
+    -- load pupuk twice
+    if findNearest then
+        local ok1, r1 = tryInvoke(findNearest, "Pupuk")
+        wait(0.45)
+        local ok2, r2 = tryInvoke(findNearest, "Pupuk")
+        log("FindNearestCargo calls:", ok1, ok2, tostring(r1), tostring(r2))
+    else
+        log("FindNearestCargo remote missing")
+    end
+    wait(0.6)
+    -- try seat
+    local seatOk, seatMsg = attemptSeat(truck)
+    log("Seat attempt:", seatOk, seatMsg)
+    wait(0.6)
+    -- deliver to destination
+    local dest = findDestination()
+    if not dest then
+        log("Destination not found; simulating success.")
+        notify({Title="PENGIRIMAN BERHASIL", Message="(simulated)", AccentColor = Color3.new(0.392,1,0.588), Duration = 3.5, Sound = "rbxassetid://5314631765"})
+        return true
+    end
+    -- try CargoFullNotify
+    if cargoNotify then
+        local ok, err = tryFire(cargoNotify, dest.Position)
+        log("CargoFullNotify fired:", ok, err)
+        if ok then return true end
+    end
+    -- try find deliver remote heuristically
+    local foundDeliver = nil
+    for _, c in ipairs(ReplicatedStorage:GetDescendants()) do
+        if (c:IsA("RemoteEvent") or c:IsA("RemoteFunction")) and string.find(string.lower(c.Name), "deliver") then foundDeliver = c; break end
+    end
+    if foundDeliver then
+        if foundDeliver:IsA("RemoteFunction") then
+            local ok, res = tryInvoke(foundDeliver, "Pupuk", dest)
+            log("DeliverInvoke:", ok, tostring(res))
+            if ok then return true end
+        else
+            local ok, res = tryFire(foundDeliver, "Pupuk", dest)
+            log("DeliverFire:", ok, tostring(res))
+            if ok then return true end
+        end
+    end
+    -- final fallback teleport + simulate
+    if pl and pl.Character and pl.Character:FindFirstChild("HumanoidRootPart") and dest:IsA("BasePart") then
+        pcall(function() pl.Character.HumanoidRootPart.CFrame = dest.CFrame * CFrame.new(0,3,0) end)
+        notify({Title="PENGIRIMAN BERHASIL", Message="(simulated teleport)", AccentColor = Color3.new(0.392,1,0.588), Duration = 3.5, Sound = "rbxassetid://5314631765"})
+        return true
+    end
+    log("All delivery attempts failed.")
+    return false
+end
+
+-- loop control variables
+local running = false
+local loopDelay = 2.0
+local loopCount = 0
+local loopThread = nil
+
+-- connect GUI buttons
+gui.Start.MouseButton1Click:Connect(function()
+    if running then log("Already running") return end
+    running = true
+    gui.Status.Text = "Status: running"
+    loopThread = coroutine.create(function()
+        while running do
+            local ok, err = pcall(singleSequence)
+            loopCount = loopCount + 1
+            log("Cycle", loopCount, "completed. result:", ok, err)
+            if not ok then
+                log("singleSequence error:", tostring(err))
+            end
+            local t0 = tick()
+            while tick()-t0 < loopDelay do
+                if not running then break end
+                wait(0.1)
+            end
+        end
+        gui.Status.Text = "Status: idle"
+    end)
+    coroutine.resume(loopThread)
+end)
+
+gui.Stop.MouseButton1Click:Connect(function()
+    running = false
+    gui.Status.Text = "Status: stopping..."
+    log("Stop requested.")
+end)
+
+gui.RunOnce.MouseButton1Click:Connect(function()
+    gui.Status.Text = "Status: running one cycle..."
+    local ok, err = pcall(singleSequence)
+    log("RunOnce result:", ok, err)
+    gui.Status.Text = "Status: idle"
+end)
+
+gui.Close.MouseButton1Click:Connect(function()
+    pcall(function() if gui.Screen then gui.Screen:Destroy() end end)
+end)
+
+-- expose some debug helpers in _G for executor console
+_G.AutoLoopRunOnce = function() pcall(singleSequence) end
+_G.AutoLoopStart = function() gui.Start:MouseButton1Click() end
+_G.AutoLoopStop = function() gui.Stop:MouseButton1Click() end
+_G.AutoLoopGetDebug = function() return _G.__AutoLoopDebugLabel and _G.__AutoLoopDebugLabel.Text end
+
+log("Setup complete. If script still errors, copy-paste the DebugPanel contents here.")
