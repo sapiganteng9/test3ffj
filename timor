@@ -1,0 +1,447 @@
+-- TruckAutoLoop_Delta.lua
+-- Kompatibel dengan executor (Delta) dan LocalScript.
+-- Fungsi: GUI (toggle/drag/minimize) + Auto loop: spawn -> load -> seat -> deliver -> repeat.
+-- Paste & jalankan langsung di executor atau taruh di StarterPlayerScripts.
+
+-- Safe header to avoid "line 1: attempt to call a nil value"
+-- (this file is self-contained; run via loadstring(...)() or paste into executor)
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+local SoundService = game:GetService("SoundService")
+local CoreGui = game:GetService("CoreGui")
+
+-- ---------- Helpers ----------
+local function safePrint(...)
+    local parts = {}
+    for i = 1, select("#", ...) do parts[#parts+1] = tostring(select(i, ...)) end
+    pcall(print, "[TruckAutoLoop]", table.concat(parts, " "))
+end
+
+local function safeNew(class, props)
+    local ok, inst = pcall(function() return Instance.new(class) end)
+    if not ok or not inst then
+        safePrint("Failed to create", class)
+        return nil
+    end
+    if props then
+        for k,v in pairs(props) do
+            pcall(function()
+                if k == "Parent" then inst.Parent = v else inst[k] = v end
+            end)
+        end
+    end
+    return inst
+end
+
+local function safeCall(f, ...)
+    if type(f) ~= "function" then return false, "not a function" end
+    return pcall(f, ...)
+end
+
+-- ---------- Robust GUI parenting ----------
+local function safeParentScreenGui(screen)
+    if not screen or not screen:IsA("ScreenGui") then return false, "invalid screen" end
+    -- try PlayerGui
+    local lp = Players.LocalPlayer
+    if lp then
+        local pg = lp:FindFirstChild("PlayerGui")
+        if pg then
+            pcall(function() screen.Parent = pg end)
+            if screen.Parent == pg then return true, "PlayerGui" end
+        end
+    end
+    -- try CoreGui
+    local ok, cg = pcall(function() return game:GetService("CoreGui") end)
+    if ok and cg then
+        pcall(function() screen.Parent = cg end)
+        if screen.Parent == cg then
+            if type(syn) == "table" and type(syn.protect_gui) == "function" then
+                pcall(function() syn.protect_gui(screen) end)
+            end
+            return true, "CoreGui"
+        end
+    end
+    -- try exploit containers
+    if type(gethui) == "function" then
+        local ok2, g = pcall(gethui)
+        if ok2 and g then
+            pcall(function() screen.Parent = g end)
+            if screen.Parent == g then return true, "gethui" end
+        end
+    end
+    if type(get_hidden_gui) == "function" then
+        local ok3, g2 = pcall(get_hidden_gui)
+        if ok3 and g2 then
+            pcall(function() screen.Parent = g2 end)
+            if screen.Parent == g2 then return true, "get_hidden_gui" end
+        end
+    end
+    -- final attempt
+    pcall(function() screen.Parent = CoreGui end)
+    if screen.Parent == CoreGui then
+        if type(syn) == "table" and type(syn.protect_gui) == "function" then
+            pcall(function() syn.protect_gui(screen) end)
+        end
+        return true, "CoreGui-final"
+    end
+    return false, "all parent attempts failed"
+end
+
+-- ---------- Remote discovery & wrappers ----------
+local function refreshRemotes()
+    local spawnRemote
+    if ReplicatedStorage:FindFirstChild("TruckSpawnerRemotes") then
+        spawnRemote = ReplicatedStorage.TruckSpawnerRemotes:FindFirstChild("SpawnTruck")
+    end
+    if not spawnRemote then
+        for _,c in ipairs(ReplicatedStorage:GetDescendants()) do
+            if (c:IsA("RemoteEvent") or c:IsA("RemoteFunction")) and string.find(string.lower(c.Name), "spawn") then spawnRemote = c; break end
+        end
+    end
+    local findNearest = ReplicatedStorage:FindFirstChild("FindNearestCargo")
+    if not findNearest then
+        for _, c in ipairs(ReplicatedStorage:GetDescendants()) do
+            if (c:IsA("RemoteFunction") or c:IsA("RemoteEvent")) and string.find(string.lower(c.Name), "findnearest") then findNearest = c; break end
+        end
+    end
+    local cargoNotify = ReplicatedStorage:FindFirstChild("CargoFullNotify")
+    local notifyClient = ReplicatedStorage:FindFirstChild("NotifyClient")
+    return spawnRemote, findNearest, cargoNotify, notifyClient
+end
+
+local function findDeliverRemote()
+    local keywords = {"deliver","dropoff","complete","finish","claim","drop"}
+    for _, c in ipairs(ReplicatedStorage:GetDescendants()) do
+        if (c:IsA("RemoteEvent") or c:IsA("RemoteFunction")) then
+            local n = string.lower(c.Name)
+            for _, kw in ipairs(keywords) do
+                if string.find(n, kw) then return c end
+            end
+        end
+    end
+    return nil
+end
+
+local function safeFire(ev, ...)
+    if not ev then return false, "not found" end
+    if typeof(ev.FireServer) == "function" then
+        return pcall(function() ev:FireServer(...) end)
+    end
+    return false, "not RemoteEvent"
+end
+
+local function safeInvoke(fn, ...)
+    if not fn then return false, "not found" end
+    if typeof(fn.InvokeServer) == "function" then
+        local ok, res = pcall(function() return fn:InvokeServer(...) end)
+        if ok then return true, res else return false, res end
+    elseif typeof(fn.FireServer) == "function" then
+        return pcall(function() fn:FireServer(...) end)
+    end
+    return false, "not callable"
+end
+
+-- ---------- Destination & Truck detection ----------
+local function findDescendantByName(root, name)
+    for _, child in ipairs(root:GetChildren()) do
+        if child.Name == name then return child end
+        local found = findDescendantByName(child, name)
+        if found then return found end
+    end
+    return nil
+end
+
+local function getDestinationPart()
+    local targetName = "DestinationPoint_PakanTernak"
+    local inst = Workspace:FindFirstChild(targetName) or findDescendantByName(Workspace, targetName)
+    if not inst then
+        for _, c in ipairs(Workspace:GetDescendants()) do
+            if string.lower(c.Name) == string.lower(targetName) then inst = c; break end
+        end
+    end
+    if not inst then return nil end
+    if inst:IsA("Model") then
+        if inst.PrimaryPart then return inst.PrimaryPart end
+        for _, d in ipairs(inst:GetDescendants()) do if d:IsA("BasePart") then return d end end
+        return nil
+    end
+    if inst:IsA("BasePart") then return inst end
+    return nil
+end
+
+local function isLikelyTruckModel(m)
+    if not m or not m:IsA("Model") then return false end
+    local n = string.lower(m.Name or "")
+    if string.find(n, "truck") or string.find(n, "truk") or string.find(n, "besi") then return true end
+    for _, d in ipairs(m:GetDescendants()) do
+        if d:IsA("VehicleSeat") or d:IsA("Seat") then return true end
+    end
+    return false
+end
+
+local function waitForSpawnedTruck(timeout)
+    timeout = timeout or 8
+    local start = tick()
+    for _, m in ipairs(Workspace:GetChildren()) do if isLikelyTruckModel(m) then return m end end
+    local found
+    local conn = Workspace.DescendantAdded:Connect(function(obj)
+        if found then return end
+        if obj:IsA("Model") and isLikelyTruckModel(obj) then found = obj end
+        local pm = obj:FindFirstAncestorOfClass("Model")
+        if pm and isLikelyTruckModel(pm) then found = pm end
+    end)
+    while tick() - start < timeout and not found do wait(0.1) end
+    if conn then conn:Disconnect() end
+    return found
+end
+
+local function trySeatInVehicle(truckModel)
+    if not truckModel then return false, "no truck" end
+    local seat
+    for _, d in ipairs(truckModel:GetDescendants()) do
+        if d:IsA("VehicleSeat") or d:IsA("Seat") then seat = d; break end
+    end
+    if not seat then return false, "no seat found" end
+    local lp = Players.LocalPlayer
+    local char = lp and lp.Character
+    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+    local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+    if not humanoid or not hrp then return false, "no humanoid/hrp" end
+    pcall(function() hrp.CFrame = seat.CFrame * CFrame.new(0,2,0) end)
+    pcall(function() humanoid.Sit = true end)
+    local t0 = tick()
+    while tick() - t0 < 2 do
+        if seat.Occupant and seat.Occupant.Parent == humanoid then return true, "seated" end
+        if humanoid.SeatPart == seat then return true, "seated" end
+        wait(0.12)
+    end
+    return false, "seat not confirmed"
+end
+
+-- ---------- Single auto cycle ----------
+local function singleCycle(logToGui)
+    local spawnRemote, findNearest, cargoNotify, notifyClient = refreshRemotes()
+    if logToGui then logToGui("Remotes: spawn="..tostring(spawnRemote)..", findNearest="..tostring(findNearest)) end
+
+    if spawnRemote then
+        local ok, err = safeFire(spawnRemote, "BESI TUA")
+        if logToGui then logToGui("Spawn fired: "..tostring(ok).." "..tostring(err)) end
+    else
+        if logToGui then logToGui("Spawn remote not found") end
+    end
+
+    local truck = waitForSpawnedTruck(8)
+    if logToGui then logToGui("Truck found: "..tostring(truck)) end
+    wait(0.8)
+
+    if findNearest then
+        local ok1,r1 = safeInvoke(findNearest, "Pupuk")
+        wait(0.45)
+        local ok2,r2 = safeInvoke(findNearest, "Pupuk")
+        if logToGui then logToGui("Load: "..tostring(ok1)..", "..tostring(ok2)) end
+    else
+        if logToGui then logToGui("FindNearestCargo missing") end
+    end
+
+    wait(0.6)
+    local seatOk, seatMsg = trySeatInVehicle(truck)
+    if logToGui then logToGui("Seat: "..tostring(seatOk).." "..tostring(seatMsg)) end
+    wait(0.6)
+
+    local dest = getDestinationPart()
+    if not dest then
+        if logToGui then
+            logToGui("Destination missing. Simulating success (client-only).")
+            pcall(function() local s=Instance.new("Sound", SoundService); s.SoundId="rbxassetid://5314631765"; s:Play() end)
+        end
+        return true
+    end
+
+    local delivered = false
+    if cargoNotify then
+        local ok, err = safeFire(cargoNotify, dest.Position)
+        if logToGui then logToGui("CargoFullNotify: "..tostring(ok)) end
+        if ok then delivered = true end
+    end
+
+    if not delivered then
+        local dr = findDeliverRemote()
+        if dr then
+            if dr:IsA("RemoteFunction") then
+                local ok,res = safeInvoke(dr, "Pupuk", dest)
+                if logToGui then logToGui("Deliver invoke: "..tostring(ok)) end
+                if ok then delivered = true end
+            else
+                local ok,res = safeFire(dr, "Pupuk", dest)
+                if logToGui then logToGui("Deliver fire: "..tostring(ok)) end
+                if ok then delivered = true end
+            end
+        end
+    end
+
+    if not delivered then
+        local lp = Players.LocalPlayer
+        local char = lp and lp.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp and dest and dest:IsA("BasePart") then
+            pcall(function() hrp.CFrame = dest.CFrame * CFrame.new(0,3,0) end)
+            if logToGui then logToGui("Teleported to dest (simulated success)") end
+            pcall(function() local s=Instance.new("Sound", SoundService); s.SoundId="rbxassetid://5314631765"; s:Play() end)
+            delivered = true
+        else
+            if logToGui then logToGui("Fallback deliver failed") end
+        end
+    end
+
+    return delivered
+end
+
+-- ---------- Build UI ----------
+local function buildUI()
+    local screen = safeNew("ScreenGui", {Name="TruckAutoLoop_UI", ResetOnSpawn=false})
+    local frame = safeNew("Frame", {Parent=screen, Size=UDim2.new(0,420,0,340), Position=UDim2.new(0,80,0,60), BackgroundColor3=Color3.fromRGB(22,24,28)})
+    safeNew("UICorner", {Parent=frame, CornerRadius=UDim.new(0,10)})
+    local titleBar = safeNew("Frame", {Parent=frame, Size=UDim2.new(1,0,0,36), BackgroundColor3=Color3.fromRGB(16,17,19)})
+    safeNew("UICorner", {Parent=titleBar, CornerRadius=UDim.new(0,10)})
+    local title = safeNew("TextLabel", {Parent=titleBar, BackgroundTransparency=1, Text="AutoLoop: Truck → Pupuk → Antar → Ulangi", TextColor3=Color3.new(1,1,1), Font=Enum.Font.GothamBold, TextSize=14, Position=UDim2.new(0,12,0,0), Size=UDim2.new(1,-120,1,0), TextXAlignment=Enum.TextXAlignment.Left})
+    local btnMin = safeNew("TextButton", {Parent=titleBar, Text="—", Size=UDim2.new(0,28,0,28), Position=UDim2.new(1,-84,0,4), BackgroundColor3=Color3.fromRGB(84,84,84)})
+    safeNew("UICorner", {Parent=btnMin, CornerRadius=UDim.new(0,6)})
+    local btnClose = safeNew("TextButton", {Parent=titleBar, Text="✕", Size=UDim2.new(0,28,0,28), Position=UDim2.new(1,-44,0,4), BackgroundColor3=Color3.fromRGB(200,70,70)})
+    safeNew("UICorner", {Parent=btnClose, CornerRadius=UDim.new(0,6)})
+    local content = safeNew("Frame", {Parent=frame, Position=UDim2.new(0,12,0,52), Size=UDim2.new(1,-24,1,-64), BackgroundTransparency=1})
+    safeNew("UIPadding", {Parent=content, PaddingLeft=UDim.new(0,6), PaddingTop=UDim.new(0,6)})
+    safeNew("UIListLayout", {Parent=content, FillDirection=Enum.FillDirection.Vertical, Padding=UDim.new(0,8)})
+    local status = safeNew("TextLabel", {Parent=content, Size=UDim2.new(1,0,0,40), BackgroundColor3=Color3.fromRGB(36,36,36), Text="Ready", TextColor3=Color3.new(1,1,1), Font=Enum.Font.Gotham, TextSize=14})
+    safeNew("UICorner", {Parent=status, CornerRadius=UDim.new(0,8)})
+    local function mkBtn(text) local b = safeNew("TextButton", {Parent=content, Size=UDim2.new(1,0,0,36), BackgroundColor3=Color3.fromRGB(48,50,56), Text=text, TextColor3=Color3.new(1,1,1), Font=Enum.Font.GothamMedium, TextSize=14}); safeNew("UICorner", {Parent=b, CornerRadius=UDim.new(0,8)}); return b end
+    local btnStart = mkBtn("Start Loop")
+    local btnStop = mkBtn("Stop Loop")
+    local btnRunOnce = mkBtn("Run Once")
+    local btnCheckDest = mkBtn("Check Destination")
+    local btnFindDeliver = mkBtn("Find deliver remote")
+    local options = safeNew("Frame", {Parent=content, Size=UDim2.new(1,0,0,40), BackgroundTransparency=1})
+    safeNew("UIListLayout", {Parent=options, FillDirection=Enum.FillDirection.Horizontal, Padding=UDim.new(0,6)})
+    local lblDelay = safeNew("TextLabel", {Parent=options, Size=UDim2.new(0,160,1,0), BackgroundTransparency=1, Text="Delay (s) between cycles:", TextColor3=Color3.new(1,1,1), Font=Enum.Font.Gotham, TextSize=12, TextXAlignment=Enum.TextXAlignment.Left})
+    local delayBox = safeNew("TextBox", {Parent=options, Size=UDim2.new(0,80,1,0), Text="2.0", ClearTextOnFocus=false, TextColor3=Color3.new(1,1,1), BackgroundColor3=Color3.fromRGB(50,50,50), Font=Enum.Font.Gotham, TextSize=14})
+    safeNew("UICorner", {Parent=delayBox, CornerRadius=UDim.new(0,6)})
+    local counterLabel = safeNew("TextLabel", {Parent=content, Size=UDim2.new(1,0,0,20), BackgroundTransparency=1, Text="Cycles completed: 0", TextColor3=Color3.new(1,1,1), Font=Enum.Font.Gotham, TextSize=12})
+    local debugBox = safeNew("TextLabel", {Parent=content, Size=UDim2.new(1,0,0,80), BackgroundColor3=Color3.fromRGB(16,16,16), Text="Log:", TextColor3=Color3.new(1,1,1), Font=Enum.Font.Code, TextSize=12, TextWrapped=true})
+    safeNew("UICorner", {Parent=debugBox, CornerRadius=UDim.new(0,6)})
+
+    do
+        local dragging, dragStart, startPos = false, nil, nil
+        titleBar.InputBegan:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging=true; dragStart=inp.Position; startPos=frame.Position
+                inp.Changed:Connect(function() if inp.UserInputState==Enum.UserInputState.End then dragging=false end end)
+            end
+        end)
+        UserInputService.InputChanged:Connect(function(inp)
+            if dragging and inp.UserInputType==Enum.UserInputType.MouseMovement then
+                local delta = inp.Position - dragStart
+                pcall(function() frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y) end)
+            end
+        end)
+    end
+
+    return {
+        Screen=screen, Frame=frame, Start=btnStart, Stop=btnStop, RunOnce=btnRunOnce,
+        CheckDest=btnCheckDest, FindDeliver=btnFindDeliver, DelayBox=delayBox,
+        Status=status, Counter=counterLabel, Debug=debugBox, Min=btnMin, Close=btnClose
+    }
+end
+
+-- ---------- Initialize ----------
+local ui = buildUI()
+local ok, why = safeParentScreenGui(ui.Screen)
+safePrint("GUI parent:", ok, why)
+if not ok then
+    -- still show debug in CoreGui text label if possible
+    pcall(function() ui.Debug.Text = ui.Debug.Text .. "\nParent failed: "..tostring(why) end)
+end
+
+local function guiLog(...)
+    local parts = {}
+    for i=1, select("#", ...) do parts[#parts+1] = tostring(select(i, ...)) end
+    local line = table.concat(parts, " ")
+    pcall(function()
+        if ui and ui.Debug and ui.Debug:IsA("TextLabel") then
+            ui.Debug.Text = (ui.Debug.Text or "") .. "\n" .. line
+            local lines = {}
+            for l in string.gmatch(ui.Debug.Text, "[^\n]+") do table.insert(lines, l) end
+            if #lines > 14 then ui.Debug.Text = table.concat({unpack(lines, #lines-13, #lines)}, "\n") end
+        end
+    end)
+    safePrint(line)
+end
+
+local running = false
+local stopRequested = false
+local loopCount = 0
+
+ui.Start.MouseButton1Click:Connect(function()
+    if running then guiLog("Already running"); return end
+    running = true; stopRequested = false
+    ui.Status.Text = "Running..."
+    guiLog("Loop started")
+    spawn(function()
+        local delaySec = tonumber(ui.DelayBox.Text) or 2.0
+        while running and not stopRequested do
+            ui.Status.Text = "Cycle running..."
+            local ok, res = pcall(singleCycle, guiLog)
+            loopCount = loopCount + 1
+            ui.Counter.Text = "Cycles completed: "..tostring(loopCount)
+            ui.Status.Text = "Cycle finished. Waiting "..tostring(delaySec).."s"
+            local t0 = tick()
+            while tick() - t0 < delaySec do
+                if stopRequested then break end
+                wait(0.1)
+            end
+        end
+        running = false; stopRequested = false
+        ui.Status.Text = "Stopped"
+        guiLog("Loop stopped")
+    end)
+end)
+
+ui.Stop.MouseButton1Click:Connect(function()
+    if not running then guiLog("Not running"); return end
+    stopRequested = true
+    ui.Status.Text = "Stopping..."
+    guiLog("Stop requested")
+end)
+
+ui.RunOnce.MouseButton1Click:Connect(function()
+    ui.Status.Text = "Running one cycle..."
+    guiLog("RunOnce manual")
+    spawn(function() local ok,res = pcall(singleCycle, guiLog); guiLog("RunOnce done:", ok, res); ui.Status.Text = "Ready" end)
+end)
+
+ui.CheckDest.MouseButton1Click:Connect(function()
+    local d = getDestinationPart()
+    if d then guiLog("Destination:", d:GetFullName(), ("@ %.2f, %.2f, %.2f"):format(d.Position.X, d.Position.Y, d.Position.Z)) else guiLog("Destination not found") end
+end)
+
+ui.FindDeliver.MouseButton1Click:Connect(function()
+    local dr = findDeliverRemote()
+    if dr then guiLog("Deliver remote:", dr:GetFullName(), dr.ClassName) else guiLog("No deliver remote found") end
+end)
+
+ui.Min.MouseButton1Click:Connect(function()
+    if ui.Frame.Size == UDim2.new(0,420,0,36) then ui.Frame.Size = UDim2.new(0,420,0,340) else ui.Frame.Size = UDim2.new(0,420,0,36) end
+end)
+
+ui.Close.MouseButton1Click:Connect(function() pcall(function() ui.Screen:Destroy() end) end)
+
+-- try to force visibility
+pcall(function()
+    if ui and ui.Screen and ui.Screen.Parent then
+        pcall(function() ui.Screen.Enabled = true; ui.Screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling; ui.Screen.DisplayOrder = 9999 end)
+        for _,desc in ipairs(ui.Screen:GetDescendants()) do if desc:IsA("GuiObject") then pcall(function() desc.Visible = true; desc.ZIndex = 50 end) end end
+    end
+end)
+
+guiLog("Ready. Parent = "..tostring(ui.Screen.Parent))
